@@ -23,6 +23,9 @@ dependencies = [
 [[package]]
 name = "simple-dst"
 version = "0.1.0"
+dependencies = [
+ "simple-dst-derive",
+]
 
 [[package]]
 name = "simple-dst-derive"

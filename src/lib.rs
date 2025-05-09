@@ -26,6 +26,9 @@ use core::{
     ptr,
 };
 
+#[cfg(feature = "simple-dst-derive")]
+pub use simple_dst_derive::Dst;
+
 pub use errors::*;
 
 /// A dynamically sized type.
