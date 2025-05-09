@@ -111,9 +111,9 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .collect();
 
     let expanded = quote! {
-        unsafe impl #impl_generics dst::Dst for #name #ty_generics #where_clause {
+        unsafe impl #impl_generics simple_dst::Dst for #name #ty_generics #where_clause {
             fn len(&self) -> usize {
-                dst::Dst::len(&self.#last_ident)
+                simple_dst::Dst::len(&self.#last_ident)
             }
 
             fn layout(len: usize) -> ::core::result::Result<::core::alloc::Layout, ::core::alloc::LayoutError> {
@@ -137,7 +137,7 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         impl #impl_generics #name #ty_generics #where_clause {
             fn layout_offsets(len: usize) -> ::core::result::Result<(::core::alloc::Layout, [usize; #n_fields]), ::core::alloc::LayoutError> {
                 #( let #first_layout_idents = ::core::alloc::Layout::new::<#first_tys>(); )*
-                let #last_layout_ident = <#last_ty as dst::Dst>::layout(len)?;
+                let #last_layout_ident = <#last_ty as simple_dst::Dst>::layout(len)?;
                 let mut offsets = [0; #n_fields];
                 let layout = #first_layout_ident;
                 #( #layout_offset )*
@@ -150,11 +150,11 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 #last_ident: &#last_ty
             ) {
                 // TODO: remove this unwrap so that we don't break the contract for `new_dst`.
-                let (layout, offsets) = Self::layout_offsets(<#last_ty as dst::Dst>::len(#last_ident)).unwrap();
+                let (layout, offsets) = Self::layout_offsets(<#last_ty as simple_dst::Dst>::len(#last_ident)).unwrap();
                 unsafe {
                     let raw = ptr.cast::<u8>();
                     #( #writes )*
-                    <#last_ty as dst::Dst>::clone_to_raw(#last_ident, <#last_ty as dst::Dst>::retype(raw.add(offsets[#n_fields - 1]), dst::Dst::len(#last_ident)));
+                    <#last_ty as simple_dst::Dst>::clone_to_raw(#last_ident, <#last_ty as simple_dst::Dst>::retype(raw.add(offsets[#n_fields - 1]), simple_dst::Dst::len(#last_ident)));
                     debug_assert_eq!(::core::alloc::Layout::for_value(ptr.as_ref()), layout);
                 }
             }
@@ -164,7 +164,7 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 #last_ident: &#last_ty
             ) -> ::core::result::Result<A, dst::AllocDstError> {
                 unsafe {
-                    <A as dst::AllocDst<Self>>::new_dst(<#last_ty as dst::Dst>::len(#last_ident), |ptr| {
+                    <A as dst::AllocDst<Self>>::new_dst(<#last_ty as simple_dst::Dst>::len(#last_ident), |ptr| {
                         Self::write_to_raw(ptr, #( #idents ),*)
                     })
                 }
