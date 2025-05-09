@@ -10,6 +10,6 @@ repository = "https://github.com/FintasticMan/simple-dst"
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "1.0.95"
-quote = "1.0.40"
-syn = "2.0.101"
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = "2.0"
