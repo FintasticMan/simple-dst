@@ -159,12 +159,12 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 }
             }
 
-            fn alloc<A: dst::AllocDst<Self>>(
+            fn alloc<A: simple_dst::AllocDst<Self>>(
                 #( #first_idents: #first_tys ),*,
                 #last_ident: &#last_ty
-            ) -> ::core::result::Result<A, dst::AllocDstError> {
+            ) -> ::core::result::Result<A, simple_dst::AllocDstError> {
                 unsafe {
-                    <A as dst::AllocDst<Self>>::new_dst(<#last_ty as simple_dst::Dst>::len(#last_ident), |ptr| {
+                    <A as simple_dst::AllocDst<Self>>::new_dst(<#last_ty as simple_dst::Dst>::len(#last_ident), |ptr| {
                         Self::write_to_raw(ptr, #( #idents ),*)
                     })
                 }
