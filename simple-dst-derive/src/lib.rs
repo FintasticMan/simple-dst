@@ -1,7 +1,7 @@
 use quote::{format_ident, quote};
 use syn::{
-    AttrStyle, Attribute, Data, DataStruct, DeriveInput, Field, Fields, FieldsNamed, FieldsUnnamed,
-    Meta, MetaList, Token, parse_macro_input, punctuated::Punctuated,
+    AttrStyle, Attribute, Data, DataStruct, DeriveInput, Field, Fields, FieldsNamed, Meta,
+    MetaList, Token, parse_macro_input, punctuated::Punctuated,
 };
 
 fn is_repr_c(attrs: &[Attribute]) -> bool {
@@ -31,9 +31,6 @@ fn get_fields(data: Data) -> Punctuated<Field, Token![,]> {
     match data {
         Data::Struct(DataStruct { fields, .. }) => match fields {
             Fields::Named(FieldsNamed { named: fields, .. }) => fields,
-            Fields::Unnamed(FieldsUnnamed {
-                unnamed: fields, ..
-            }) => fields,
             _ => unimplemented!(),
         },
         _ => unimplemented!(),
@@ -59,6 +56,10 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let n_fields = fields.len();
 
+    let idxs: Vec<_> = (0..n_fields).collect();
+    let last_idx = n_fields - 1;
+    let first_idxs: Vec<_> = (0..last_idx).collect();
+
     let idents: Vec<_> = fields
         .iter()
         .map(|f| match f {
@@ -70,13 +71,12 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             _ => unimplemented!(),
         })
         .collect();
-    let first_idents = &idents[..n_fields - 1];
-    let last_ident = &idents[n_fields - 1];
+    let first_idents = &idents[..last_idx];
+    let last_ident = &idents[last_idx];
 
     let layout_idents: Vec<_> = idents.iter().map(|f| format_ident!("{f}_layout")).collect();
-    let first_layout_ident = &layout_idents[0];
-    let first_layout_idents = &layout_idents[..n_fields - 1];
-    let last_layout_ident = &layout_idents[n_fields - 1];
+    let first_layout_idents = &layout_idents[..last_idx];
+    let last_layout_ident = &layout_idents[last_idx];
 
     let tys: Vec<_> = fields
         .iter()
@@ -85,30 +85,8 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             _ => unimplemented!(),
         })
         .collect();
-    let first_tys = &tys[..n_fields - 1];
-    let last_ty = &tys[n_fields - 1];
-
-    let layout_offset: Vec<_> = layout_idents[1..]
-        .iter()
-        .enumerate()
-        .map(|(i, ident)| {
-            let i = i + 1;
-            quote! {
-                let (layout, offset) = layout.extend(#ident)?;
-                offsets[#i] = offset;
-            }
-        })
-        .collect();
-
-    let writes: Vec<_> = first_idents
-        .iter()
-        .enumerate()
-        .map(|(i, ident)| {
-            quote! {
-                ::core::ptr::write(raw.add(offsets[#i]).cast().as_ptr(), #ident);
-            }
-        })
-        .collect();
+    let first_tys = &tys[..last_idx];
+    let last_ty = &tys[last_idx];
 
     let expanded = quote! {
         unsafe impl #impl_generics simple_dst::Dst for #name #ty_generics #where_clause {
@@ -139,8 +117,11 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 #( let #first_layout_idents = ::core::alloc::Layout::new::<#first_tys>(); )*
                 let #last_layout_ident = <#last_ty as simple_dst::Dst>::layout(len)?;
                 let mut offsets = [0; #n_fields];
-                let layout = #first_layout_ident;
-                #( #layout_offset )*
+                let layout = ::core::alloc::Layout::from_size_align(0, 1)?;
+                #(
+                    let (layout, offset) = layout.extend(#layout_idents)?;
+                    offsets[#idxs] = offset;
+                )*
                 Ok((layout.pad_to_align(), offsets))
             }
 
@@ -149,11 +130,13 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 #( #first_idents: #first_tys ),*,
                 #last_ident: &#last_ty
             ) {
-                // TODO: remove this unwrap so that we don't break the contract for `new_dst`.
+                // TODO: remove this unwrap so that we don't break the contract for `AllocDst::new_dst`.
                 let (layout, offsets) = Self::layout_offsets(<#last_ty as simple_dst::Dst>::len(#last_ident)).unwrap();
                 unsafe {
                     let raw = ptr.cast::<u8>();
-                    #( #writes )*
+                    #(
+                        ::core::ptr::write(raw.add(offsets[#first_idxs]).cast().as_ptr(), #first_idents);
+                    )*
                     <#last_ty as simple_dst::Dst>::clone_to_raw(#last_ident, <#last_ty as simple_dst::Dst>::retype(raw.add(offsets[#n_fields - 1]), simple_dst::Dst::len(#last_ident)));
                     debug_assert_eq!(::core::alloc::Layout::for_value(ptr.as_ref()), layout);
                 }
@@ -172,6 +155,5 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
     };
 
-    // Hand the output tokens back to the compiler.
     expanded.into()
 }
