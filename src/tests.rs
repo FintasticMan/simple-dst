@@ -61,10 +61,15 @@ unsafe impl Dst for Type {
 unsafe impl CloneToUninitDst for Type {
     unsafe fn clone_to_uninit(&self, dst: *mut u8) {
         unsafe {
-            let data1_offset = (&raw const self.data1).byte_offset_from_unsigned(self);
-            let data2_offset = (&raw const self.data2).byte_offset_from_unsigned(self);
-            let data3_offset = (&raw const self.data3).byte_offset_from_unsigned(self);
-            let slice_offset = (&raw const self.slice).byte_offset_from_unsigned(self);
+            // FUTURE: switch to byte_offset_from_unsigned when it has stabilised.
+            let data1_offset =
+                usize::try_from((&raw const self.data1).byte_offset_from(self)).unwrap_unchecked();
+            let data2_offset =
+                usize::try_from((&raw const self.data2).byte_offset_from(self)).unwrap_unchecked();
+            let data3_offset =
+                usize::try_from((&raw const self.data3).byte_offset_from(self)).unwrap_unchecked();
+            let slice_offset =
+                usize::try_from((&raw const self.slice).byte_offset_from(self)).unwrap_unchecked();
             self.data1.clone_to_uninit(dst.add(data1_offset));
             self.data2.clone_to_uninit(dst.add(data2_offset));
             self.data3.clone_to_uninit(dst.add(data3_offset));

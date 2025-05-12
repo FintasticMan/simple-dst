@@ -23,6 +23,7 @@ use core::{
     alloc::{Layout, LayoutError},
     borrow::Borrow,
     error::Error,
+    mem::{self, MaybeUninit},
     ptr,
 };
 
@@ -94,14 +95,78 @@ unsafe impl<T> Dst for [T] {
     }
 }
 
-unsafe impl<T: CloneToUninitDst> CloneToUninitDst for [T] {
+unsafe impl<T: Clone> CloneToUninitDst for [T] {
+    // Copied from the standard library's implementation.
     unsafe fn clone_to_uninit(&self, dst: *mut u8) {
-        let dst: *mut T = dst.cast();
-        for (i, elem) in self.iter().enumerate() {
-            unsafe {
-                elem.clone_to_uninit(dst.add(i).cast());
-            };
+        /// Ownership of a collection of values stored in a non-owned `[MaybeUninit<T>]`, some of which
+        /// are not yet initialized. This is sort of like a `Vec` that doesn't own its allocation.
+        /// Its responsibility is to provide cleanup on unwind by dropping the values that *are*
+        /// initialized, unless disarmed by forgetting.
+        ///
+        /// This is a helper for `impl<T: Clone> CloneToUninit for [T]`.
+        struct InitializingSlice<'a, T> {
+            data: &'a mut [MaybeUninit<T>],
+            /// Number of elements of `*self.data` that are initialized.
+            initialized_len: usize,
         }
+
+        impl<'a, T> InitializingSlice<'a, T> {
+            #[inline]
+            fn from_fully_uninit(data: &'a mut [MaybeUninit<T>]) -> Self {
+                Self {
+                    data,
+                    initialized_len: 0,
+                }
+            }
+
+            /// Push a value onto the end of the initialized part of the slice.
+            ///
+            /// # Panics
+            ///
+            /// Panics if the slice is already fully initialized.
+            #[inline]
+            fn push(&mut self, value: T) {
+                MaybeUninit::write(&mut self.data[self.initialized_len], value);
+                self.initialized_len += 1;
+            }
+        }
+
+        impl<'a, T> Drop for InitializingSlice<'a, T> {
+            #[cold] // will only be invoked on unwind
+            fn drop(&mut self) {
+                let initialized_slice = ptr::slice_from_raw_parts_mut(
+                    self.data.as_mut_ptr().cast::<T>(),
+                    self.initialized_len,
+                );
+
+                // SAFETY:
+                // * the pointer is valid because it was made from a mutable reference
+                // * `initialized_len` counts the initialized elements as an invariant of this type,
+                //   so each of the pointed-to elements is initialized and may be dropped.
+                unsafe {
+                    ptr::drop_in_place::<[T]>(initialized_slice);
+                }
+            }
+        }
+
+        // SAFETY: The produced `&mut` is valid because:
+        // * The caller is obligated to provide a pointer which is valid for writes.
+        // * All bytes pointed to are in MaybeUninit, so we don't care about the memory's
+        //   initialization status.
+        let uninit_ref = unsafe {
+            &mut *ptr::slice_from_raw_parts_mut(dst.cast::<MaybeUninit<T>>(), self.len())
+        };
+
+        // Copy the elements
+        let mut initializing = InitializingSlice::from_fully_uninit(uninit_ref);
+        for element_ref in self {
+            // If the clone() panics, `initializing` will take care of the cleanup.
+            initializing.push(element_ref.clone());
+        }
+
+        // If we reach here, then the entire slice is initialized, and we've satisfied our
+        // responsibilities to the caller. Disarm the cleanup guard by forgetting it.
+        mem::forget(initializing);
     }
 }
 
@@ -155,8 +220,8 @@ unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
         let layout = T::layout(len)?;
 
         unsafe {
-            // FUTURE: switch to Layout::dangling() when it has stabilised.
             let raw = if layout.size() == 0 {
+                // FUTURE: switch to Layout::dangling() when it has stabilised.
                 ptr::without_provenance_mut(layout.align())
             } else {
                 alloc(layout)
