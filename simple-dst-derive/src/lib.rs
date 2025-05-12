@@ -89,14 +89,15 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let last_ty = &tys[last_idx];
 
     let expanded = quote! {
-        unsafe impl #impl_generics simple_dst::Dst for #name #ty_generics #where_clause {
+        #[automatically_derived]
+        unsafe impl #impl_generics ::simple_dst::Dst for #name #ty_generics #where_clause {
             fn len(&self) -> usize {
-                simple_dst::Dst::len(&self.#last_ident)
+                ::simple_dst::Dst::len(&self.#last_ident)
             }
 
             fn layout(len: usize) -> ::core::result::Result<::core::alloc::Layout, ::core::alloc::LayoutError> {
-                let (layout, _) = Self::layout_offsets(len)?;
-                Ok(layout)
+                let (layout, _) = Self::__dst_impl_layout_offsets(len)?;
+                ::core::result::Result::Ok(layout)
             }
 
             fn retype(ptr: ::core::ptr::NonNull<u8>, len: usize) -> ::core::ptr::NonNull<Self> {
@@ -105,50 +106,54 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 unsafe { ::core::ptr::NonNull::new_unchecked(ptr.as_ptr() as *mut _) }
             }
 
-            unsafe fn clone_to_raw(&self, ptr: ::core::ptr::NonNull<Self>) {
+            unsafe fn clone_to_raw(&self, ptr: ::core::ptr::NonNull<Self>) -> ::core::result::Result<(), ::core::alloc::LayoutError> {
                 unsafe {
-                    Self::write_to_raw(ptr, #( self.#first_idents ),*, &self.#last_ident)
+                    Self::__dst_impl_write_to_raw(ptr, #( self.#first_idents ),*, &self.#last_ident)
                 }
             }
         }
 
+        #[automatically_derived]
         impl #impl_generics #name #ty_generics #where_clause {
-            fn layout_offsets(len: usize) -> ::core::result::Result<(::core::alloc::Layout, [usize; #n_fields]), ::core::alloc::LayoutError> {
+            #[doc(hidden)]
+            #[inline]
+            fn __dst_impl_layout_offsets(len: usize) -> ::core::result::Result<(::core::alloc::Layout, [usize; #n_fields]), ::core::alloc::LayoutError> {
                 #( let #first_layout_idents = ::core::alloc::Layout::new::<#first_tys>(); )*
-                let #last_layout_ident = <#last_ty as simple_dst::Dst>::layout(len)?;
+                let #last_layout_ident = <#last_ty as ::simple_dst::Dst>::layout(len)?;
                 let mut offsets = [0; #n_fields];
                 let layout = ::core::alloc::Layout::from_size_align(0, 1)?;
                 #(
                     let (layout, offset) = layout.extend(#layout_idents)?;
                     offsets[#idxs] = offset;
                 )*
-                Ok((layout.pad_to_align(), offsets))
+                ::core::result::Result::Ok((layout.pad_to_align(), offsets))
             }
 
-            unsafe fn write_to_raw(
+            #[doc(hidden)]
+            #[inline]
+            unsafe fn __dst_impl_write_to_raw(
                 ptr: ::core::ptr::NonNull<Self>,
                 #( #first_idents: #first_tys ),*,
                 #last_ident: &#last_ty
-            ) {
-                // TODO: remove this unwrap so that we don't break the contract for `AllocDst::new_dst`.
-                let (layout, offsets) = Self::layout_offsets(<#last_ty as simple_dst::Dst>::len(#last_ident)).unwrap();
+            ) -> ::core::result::Result<(), ::core::alloc::LayoutError> {
+                let (layout, offsets) = Self::layout_offsets(<#last_ty as ::simple_dst::Dst>::len(#last_ident))?;
                 unsafe {
                     let raw = ptr.cast::<u8>();
                     #(
                         ::core::ptr::write(raw.add(offsets[#first_idxs]).cast().as_ptr(), #first_idents);
                     )*
-                    <#last_ty as simple_dst::Dst>::clone_to_raw(#last_ident, <#last_ty as simple_dst::Dst>::retype(raw.add(offsets[#n_fields - 1]), simple_dst::Dst::len(#last_ident)));
-                    debug_assert_eq!(::core::alloc::Layout::for_value(ptr.as_ref()), layout);
+                    <#last_ty as ::simple_dst::Dst>::clone_to_raw(#last_ident, <#last_ty as ::simple_dst::Dst>::retype(raw.add(offsets[#n_fields - 1]), ::simple_dst::Dst::len(#last_ident)))?;
                 }
             }
 
-            fn alloc<A: simple_dst::AllocDst<Self>>(
+            #[inline]
+            fn new_internal<A: ::simple_dst::AllocDst<Self>>(
                 #( #first_idents: #first_tys ),*,
                 #last_ident: &#last_ty
-            ) -> ::core::result::Result<A, simple_dst::AllocDstError> {
+            ) -> ::core::result::Result<A, ::simple_dst::AllocDstError<::core::alloc::LayoutError>> {
                 unsafe {
-                    <A as simple_dst::AllocDst<Self>>::new_dst(<#last_ty as simple_dst::Dst>::len(#last_ident), |ptr| {
-                        Self::write_to_raw(ptr, #( #idents ),*)
+                    A::new_dst(<#last_ty as ::simple_dst::Dst>::len(#last_ident), |ptr| {
+                        Self::__dst_impl_write_to_raw(ptr, #( #idents ),*)
                     })
                 }
             }

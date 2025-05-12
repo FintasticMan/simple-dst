@@ -2,33 +2,12 @@ use core::{alloc::LayoutError, error::Error, fmt::Display};
 
 // FUTURE: add Alloc once AllocError has stabilised.
 #[derive(Debug)]
-pub enum AllocDstError {
-    Layout(LayoutError),
-}
-
-impl Display for AllocDstError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let AllocDstError::Layout(e) = self;
-        Display::fmt(e, f)
-    }
-}
-
-impl Error for AllocDstError {}
-
-impl From<LayoutError> for AllocDstError {
-    fn from(value: LayoutError) -> Self {
-        AllocDstError::Layout(value)
-    }
-}
-
-// FUTURE: add Alloc once AllocError has stabilised.
-#[derive(Debug)]
-pub enum TryAllocDstError<E: Error> {
+pub enum AllocDstError<E: Error + 'static> {
     Layout(LayoutError),
     Init(E),
 }
 
-impl<E: Error> Display for TryAllocDstError<E> {
+impl<E: Error + 'static> Display for AllocDstError<E> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Layout(e) => Display::fmt(e, f),
@@ -37,10 +16,17 @@ impl<E: Error> Display for TryAllocDstError<E> {
     }
 }
 
-impl<E: Error> Error for TryAllocDstError<E> {}
+impl<E: Error + 'static> Error for AllocDstError<E> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Layout(e) => Some(e),
+            Self::Init(e) => Some(e),
+        }
+    }
+}
 
-impl<E: Error> From<LayoutError> for TryAllocDstError<E> {
+impl<E: Error + 'static> From<LayoutError> for AllocDstError<E> {
     fn from(value: LayoutError) -> Self {
-        Self::Layout(value)
+        AllocDstError::Layout(value)
     }
 }

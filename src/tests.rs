@@ -1,3 +1,5 @@
+use core::convert::Infallible;
+
 use crate::*;
 
 #[cfg(feature = "alloc")]
@@ -6,10 +8,11 @@ fn str_test() {
     let str = "thisisatest";
     let boxed: Box<str> = unsafe {
         Box::new_dst(str.len(), |ptr| {
-            str.clone_to_raw(ptr);
+            str.clone_to_uninit(ptr.cast().as_ptr());
+            Ok::<(), Infallible>(())
         })
-        .unwrap()
-    };
+    }
+    .unwrap();
 
     assert_eq!(boxed.len(), str.len());
     assert_eq!(boxed.as_ref(), str);
@@ -21,10 +24,11 @@ fn zst_test() {
     let arr: [(); 0] = [];
     let boxed: Box<[()]> = unsafe {
         Box::new_dst(arr.len(), |ptr| {
-            arr.clone_to_raw(ptr);
+            arr.clone_to_uninit(ptr.cast().as_ptr());
+            Ok::<(), Infallible>(())
         })
-        .unwrap()
-    };
+    }
+    .unwrap();
 
     assert_eq!(boxed.len(), arr.len());
     assert_eq!(boxed.as_ref(), arr);
@@ -48,15 +52,23 @@ unsafe impl Dst for Type {
         Ok(layout)
     }
 
-    fn retype(ptr: ptr::NonNull<u8>, len: usize) -> ptr::NonNull<Self> {
-        // FUTURE: switch to ptr::NonNull:from_raw_parts() when it has stabilised.
-        let ptr = ptr::NonNull::slice_from_raw_parts(ptr.cast::<()>(), len);
-        unsafe { ptr::NonNull::new_unchecked(ptr.as_ptr() as *mut _) }
+    fn retype(ptr: *mut u8, len: usize) -> *mut Self {
+        // FUTURE: switch to ptr::from_raw_parts_mut() when it has stabilised.
+        ptr::slice_from_raw_parts_mut(ptr, len) as *mut _
     }
+}
 
-    unsafe fn clone_to_raw(&self, ptr: ptr::NonNull<Self>) {
+unsafe impl CloneToUninitDst for Type {
+    unsafe fn clone_to_uninit(&self, dst: *mut u8) {
         unsafe {
-            Self::write_to_raw(ptr, self.data1, self.data2, self.data3, &self.slice);
+            let data1_offset = (&raw const self.data1).byte_offset_from_unsigned(self);
+            let data2_offset = (&raw const self.data2).byte_offset_from_unsigned(self);
+            let data3_offset = (&raw const self.data3).byte_offset_from_unsigned(self);
+            let slice_offset = (&raw const self.slice).byte_offset_from_unsigned(self);
+            self.data1.clone_to_uninit(dst.add(data1_offset));
+            self.data2.clone_to_uninit(dst.add(data2_offset));
+            self.data3.clone_to_uninit(dst.add(data3_offset));
+            self.slice.clone_to_uninit(dst.add(slice_offset));
         }
     }
 }
@@ -78,30 +90,29 @@ impl Type {
         Ok((layout.pad_to_align(), offsets))
     }
 
-    unsafe fn write_to_raw(
-        ptr: ptr::NonNull<Self>,
+    unsafe fn write_to_uninit(
+        ptr: *mut u8,
         data1: i16,
         data2: usize,
         data3: u32,
         slice: &[i128],
-    ) {
-        let (layout, offsets) = Self::layout_offsets(slice.len()).unwrap();
+    ) -> Result<(), LayoutError> {
+        let (_, offsets) = Self::layout_offsets(slice.len())?;
         let (data1_offset, data2_offset, data3_offset, slice_offset) =
             (offsets[0], offsets[1], offsets[2], offsets[3]);
         unsafe {
-            let raw = ptr.cast::<u8>();
-            ptr::write(raw.add(data1_offset).cast().as_ptr(), data1);
-            ptr::write(raw.add(data2_offset).cast().as_ptr(), data2);
-            ptr::write(raw.add(data3_offset).cast().as_ptr(), data3);
-            slice.clone_to_raw(<[i128]>::retype(raw.add(slice_offset), slice.len()));
-            assert_eq!(Layout::for_value(ptr.as_ref()), layout);
+            data1.clone_to_uninit(ptr.add(data1_offset));
+            data2.clone_to_uninit(ptr.add(data2_offset));
+            data3.clone_to_uninit(ptr.add(data3_offset));
+            slice.clone_to_uninit(ptr.add(slice_offset));
         }
+        Ok(())
     }
 
     fn new(data1: i16, data2: usize, data3: u32, slice: &[i128]) -> Box<Self> {
         unsafe {
             Box::new_dst(slice.len(), |ptr| {
-                Self::write_to_raw(ptr, data1, data2, data3, slice)
+                Self::write_to_uninit(ptr.cast().as_ptr(), data1, data2, data3, slice)
             })
             .unwrap()
         }
@@ -127,7 +138,13 @@ fn complex_test() {
 fn clone_test() {
     let v1 = Type::new(-12, 65537, 50, &[-2, 5, 20]);
 
-    let v2 = unsafe { Box::new_dst(v1.len(), |ptr| v1.clone_to_raw(ptr)).unwrap() };
+    let v2 = unsafe {
+        Box::new_dst(v1.len(), |ptr: ptr::NonNull<Type>| {
+            v1.as_ref().clone_to_uninit(ptr.as_ptr().cast());
+            Ok::<(), Infallible>(())
+        })
+        .unwrap()
+    };
     assert_eq!(v2.data1, v1.data1);
     assert_eq!(v2.data2, v1.data2);
     assert_eq!(v2.data3, v1.data3);

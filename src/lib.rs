@@ -21,7 +21,7 @@ use alloc::{
 };
 use core::{
     alloc::{Layout, LayoutError},
-    convert::Infallible,
+    borrow::Borrow,
     error::Error,
     ptr,
 };
@@ -54,16 +54,31 @@ pub unsafe trait Dst {
     ///
     /// This function is safe but the returned pointer is not necessarily safe
     /// to dereference.
-    fn retype(ptr: ptr::NonNull<u8>, len: usize) -> ptr::NonNull<Self>;
-
-    /// Writes the data contained in this DST to the pointer given.
-    ///
-    /// # Safety
-    ///
-    /// The given pointer must be valid for the DST and have the same length as
-    /// `self`.
-    unsafe fn clone_to_raw(&self, ptr: ptr::NonNull<Self>);
+    fn retype(ptr: *mut u8, len: usize) -> *mut Self;
 }
+
+/// A generalization of [`Clone`] to dynamically-sized types stored in arbitrary containers.
+// FUTURE: switch to `CloneToUninit` when it is stabilised.
+pub unsafe trait CloneToUninitDst {
+    unsafe fn clone_to_uninit(&self, dst: *mut u8);
+}
+
+unsafe impl<T: Clone> CloneToUninitDst for T {
+    #[inline]
+    unsafe fn clone_to_uninit(&self, dst: *mut u8) {
+        unsafe {
+            ptr::write(dst.cast(), self.clone());
+        }
+    }
+}
+
+/// DSTs whose values can be duplicated simply by copying bits.
+///
+/// This exists because to implement `Copy` you need to implement `Clone` which
+/// is impossible for DSTs.
+pub trait CopyDst: CloneToUninitDst {}
+
+impl<T: Copy + CloneToUninitDst> CopyDst for T {}
 
 unsafe impl<T> Dst for [T] {
     fn len(&self) -> usize {
@@ -74,14 +89,19 @@ unsafe impl<T> Dst for [T] {
         Layout::array::<T>(len)
     }
 
-    fn retype(ptr: ptr::NonNull<u8>, len: usize) -> ptr::NonNull<Self> {
-        // FUTURE: switch to ptr::NonNull:from_raw_parts() when it has stabilised.
-        let ptr = ptr::NonNull::slice_from_raw_parts(ptr.cast::<()>(), len);
-        unsafe { ptr::NonNull::new_unchecked(ptr.as_ptr() as *mut _) }
+    fn retype(ptr: *mut u8, len: usize) -> *mut Self {
+        ptr::slice_from_raw_parts_mut(ptr.cast(), len)
     }
+}
 
-    unsafe fn clone_to_raw(&self, ptr: ptr::NonNull<Self>) {
-        unsafe { ptr::copy_nonoverlapping(self.as_ptr(), ptr.as_ptr().cast(), self.len()) };
+unsafe impl<T: CloneToUninitDst> CloneToUninitDst for [T] {
+    unsafe fn clone_to_uninit(&self, dst: *mut u8) {
+        let dst: *mut T = dst.cast();
+        for (i, elem) in self.iter().enumerate() {
+            unsafe {
+                elem.clone_to_uninit(dst.add(i).cast());
+            };
+        }
     }
 }
 
@@ -94,14 +114,17 @@ unsafe impl Dst for str {
         Layout::array::<u8>(len)
     }
 
-    fn retype(ptr: ptr::NonNull<u8>, len: usize) -> ptr::NonNull<Self> {
-        // FUTURE: switch to ptr::NonNull:from_raw_parts() when it has stabilised.
-        let ptr = ptr::NonNull::slice_from_raw_parts(ptr.cast::<()>(), len);
-        unsafe { ptr::NonNull::new_unchecked(ptr.as_ptr() as *mut _) }
+    fn retype(ptr: *mut u8, len: usize) -> *mut Self {
+        // FUTURE: switch to ptr::from_raw_parts_mut() when it has stabilised.
+        ptr::slice_from_raw_parts_mut(ptr, len) as *mut _
     }
+}
 
-    unsafe fn clone_to_raw(&self, ptr: ptr::NonNull<Self>) {
-        unsafe { ptr::copy_nonoverlapping(self.as_ptr(), ptr.as_ptr().cast(), self.len()) };
+unsafe impl CloneToUninitDst for str {
+    unsafe fn clone_to_uninit(&self, dst: *mut u8) {
+        unsafe {
+            ptr::copy_nonoverlapping(self.as_ptr(), dst, self.len());
+        }
     }
 }
 
@@ -111,75 +134,40 @@ unsafe impl Dst for str {
 ///
 /// Must be implemented as described.
 // FUTURE: use the Allocator trait once it has stabilised.
-pub unsafe trait AllocDst<T: ?Sized + Dst>: Sized {
+pub unsafe trait AllocDst<T: ?Sized + Dst>: Sized + Borrow<T> {
     /// Allocate the DST with the given length, initialize the data with the
     /// given function, and store it in the type.
     ///
     /// # Safety
     ///
     /// The `init` function may not panic, otherwise there will be a memory leak.
-    unsafe fn new_dst<F>(len: usize, init: F) -> Result<Self, AllocDstError>
-    where
-        F: FnOnce(ptr::NonNull<T>) -> ();
-}
-
-/// Blanket implementation for all types that implement [TryAllocDst].
-unsafe impl<A, T: ?Sized + Dst> AllocDst<T> for A
-where
-    A: TryAllocDst<T>,
-{
-    unsafe fn new_dst<F>(len: usize, init: F) -> Result<Self, AllocDstError>
-    where
-        F: FnOnce(ptr::NonNull<T>) -> (),
-    {
-        match unsafe { Self::try_new_dst(len, |ptr| Ok::<(), Infallible>(init(ptr))) } {
-            Ok(value) => Ok(value),
-            Err(TryAllocDstError::Layout(e)) => Err(AllocDstError::Layout(e)),
-            Err(TryAllocDstError::Init(infallible)) => match infallible {},
-        }
-    }
-}
-
-/// Type that can allocate a DST and store it inside it.
-///
-/// # Safety
-///
-/// Must be implemented as described. The `try_new_dst` function must not leak
-/// memory in the case of `init` returning an error.
-pub unsafe trait TryAllocDst<T: ?Sized + Dst>: Sized + AllocDst<T> {
-    /// Allocate the DST with the given length, initialize the data with the
-    /// given function, and store it in the type.
-    ///
-    /// # Safety
-    ///
-    /// The `init` function may not panic, otherwise there will be a memory leak.
-    unsafe fn try_new_dst<F, E: Error>(len: usize, init: F) -> Result<Self, TryAllocDstError<E>>
+    unsafe fn new_dst<F, E: Error>(len: usize, init: F) -> Result<Self, AllocDstError<E>>
     where
         F: FnOnce(ptr::NonNull<T>) -> Result<(), E>;
 }
 
 #[cfg(feature = "alloc")]
-unsafe impl<T: ?Sized + Dst> TryAllocDst<T> for Box<T> {
-    unsafe fn try_new_dst<F, E: Error>(len: usize, init: F) -> Result<Self, TryAllocDstError<E>>
+unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
+    unsafe fn new_dst<F, E: Error>(len: usize, init: F) -> Result<Self, AllocDstError<E>>
     where
         F: FnOnce(ptr::NonNull<T>) -> Result<(), E>,
     {
         let layout = T::layout(len)?;
 
         unsafe {
+            // FUTURE: switch to Layout::dangling() when it has stabilised.
             let raw = if layout.size() == 0 {
-                // FUTURE: switch to Layout::dangling() when it has stabilised.
-                ptr::NonNull::new(ptr::without_provenance_mut(layout.align()))
+                ptr::without_provenance_mut(layout.align())
             } else {
-                ptr::NonNull::new(alloc(layout))
-            }
-            .unwrap_or_else(|| handle_alloc_error(layout));
-            let ptr = T::retype(raw, len);
+                alloc(layout)
+            };
+            let ptr = ptr::NonNull::new(T::retype(raw, len))
+                .unwrap_or_else(|| handle_alloc_error(layout));
             init(ptr).map_err(|e| {
                 if layout.size() != 0 {
-                    dealloc(raw.as_ptr(), layout);
+                    dealloc(raw, layout);
                 }
-                TryAllocDstError::Init(e)
+                AllocDstError::Init(e)
             })?;
             Ok(Box::from_raw(ptr.as_ptr()))
         }
