@@ -1,4 +1,4 @@
-use core::convert::Infallible;
+use core::{convert::Infallible, mem::offset_of};
 
 use crate::*;
 
@@ -48,7 +48,7 @@ unsafe impl Dst for Type {
     }
 
     fn layout(len: usize) -> Result<Layout, LayoutError> {
-        let (layout, _) = Self::layout_offsets(len)?;
+        let (layout, _) = Self::__dst_impl_layout_offsets(len)?;
         Ok(layout)
     }
 
@@ -60,26 +60,26 @@ unsafe impl Dst for Type {
 
 unsafe impl CloneToUninitDst for Type {
     unsafe fn clone_to_uninit(&self, dst: *mut u8) {
+        // FUTURE: switch to byte_offset_from_unsigned when it has stabilised.
+        let slice_offset = unsafe {
+            usize::try_from((&raw const self.slice).byte_offset_from(self)).unwrap_unchecked()
+        };
+
         unsafe {
-            // FUTURE: switch to byte_offset_from_unsigned when it has stabilised.
-            let data1_offset =
-                usize::try_from((&raw const self.data1).byte_offset_from(self)).unwrap_unchecked();
-            let data2_offset =
-                usize::try_from((&raw const self.data2).byte_offset_from(self)).unwrap_unchecked();
-            let data3_offset =
-                usize::try_from((&raw const self.data3).byte_offset_from(self)).unwrap_unchecked();
-            let slice_offset =
-                usize::try_from((&raw const self.slice).byte_offset_from(self)).unwrap_unchecked();
-            self.data1.clone_to_uninit(dst.add(data1_offset));
-            self.data2.clone_to_uninit(dst.add(data2_offset));
-            self.data3.clone_to_uninit(dst.add(data3_offset));
-            self.slice.clone_to_uninit(dst.add(slice_offset));
+            Self::__dst_impl_write_to_uninit(
+                dst,
+                slice_offset,
+                self.data1.clone(),
+                self.data2.clone(),
+                self.data3.clone(),
+                &self.slice,
+            )
         }
     }
 }
 
 impl Type {
-    fn layout_offsets(len: usize) -> Result<(Layout, [usize; 4]), LayoutError> {
+    fn __dst_impl_layout_offsets(len: usize) -> Result<(Layout, [usize; 4]), LayoutError> {
         let data1_layout = Layout::new::<i16>();
         let data2_layout = Layout::new::<usize>();
         let data3_layout = Layout::new::<u32>();
@@ -95,29 +95,38 @@ impl Type {
         Ok((layout.pad_to_align(), offsets))
     }
 
-    unsafe fn write_to_uninit(
-        ptr: *mut u8,
+    unsafe fn __dst_impl_write_to_uninit(
+        dst: *mut u8,
+        slice_offset: usize,
         data1: i16,
         data2: usize,
         data3: u32,
         slice: &[i128],
-    ) -> Result<(), LayoutError> {
-        let (_, offsets) = Self::layout_offsets(slice.len())?;
-        let (data1_offset, data2_offset, data3_offset, slice_offset) =
-            (offsets[0], offsets[1], offsets[2], offsets[3]);
+    ) {
         unsafe {
-            data1.clone_to_uninit(ptr.add(data1_offset));
-            data2.clone_to_uninit(ptr.add(data2_offset));
-            data3.clone_to_uninit(ptr.add(data3_offset));
-            slice.clone_to_uninit(ptr.add(slice_offset));
+            slice.clone_to_uninit(dst.add(slice_offset));
+
+            dst.add(offset_of!(Self, data1)).cast::<i16>().write(data1);
+            dst.add(offset_of!(Self, data2))
+                .cast::<usize>()
+                .write(data2);
+            dst.add(offset_of!(Self, data3)).cast::<u32>().write(data3);
         }
-        Ok(())
     }
 
-    fn new(data1: i16, data2: usize, data3: u32, slice: &[i128]) -> Box<Self> {
+    fn new_internal(data1: i16, data2: usize, data3: u32, slice: &[i128]) -> Box<Self> {
         unsafe {
             Box::new_dst(slice.len(), |ptr| {
-                Self::write_to_uninit(ptr.cast().as_ptr(), data1, data2, data3, slice)
+                let (_, offsets) = Self::__dst_impl_layout_offsets(slice.len())?;
+                Self::__dst_impl_write_to_uninit(
+                    ptr.cast().as_ptr(),
+                    offsets[3],
+                    data1,
+                    data2,
+                    data3,
+                    slice,
+                );
+                Ok::<(), LayoutError>(())
             })
             .unwrap()
         }
@@ -127,7 +136,7 @@ impl Type {
 #[cfg(feature = "alloc")]
 #[test]
 fn complex_test() {
-    let v = Type::new(-12, 65537, 50, &[-2, 5, 20]);
+    let v = Type::new_internal(-12, 65537, 50, &[-2, 5, 20]);
     assert_eq!(v.data1, -12);
     assert_eq!(v.data2, 65537);
     assert_eq!(v.data3, 50);
@@ -141,7 +150,7 @@ fn complex_test() {
 #[cfg(feature = "alloc")]
 #[test]
 fn clone_test() {
-    let v1 = Type::new(-12, 65537, 50, &[-2, 5, 20]);
+    let v1 = Type::new_internal(-12, 65537, 50, &[-2, 5, 20]);
 
     let v2 = unsafe {
         Box::new_dst(v1.len(), |ptr: ptr::NonNull<Type>| {

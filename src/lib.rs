@@ -61,14 +61,14 @@ pub unsafe trait Dst {
 /// A generalization of [`Clone`] to dynamically-sized types stored in arbitrary containers.
 // FUTURE: switch to `CloneToUninit` when it is stabilised.
 pub unsafe trait CloneToUninitDst {
-    unsafe fn clone_to_uninit(&self, dst: *mut u8);
+    unsafe fn clone_to_uninit(&self, dest: *mut u8);
 }
 
 unsafe impl<T: Clone> CloneToUninitDst for T {
     #[inline]
-    unsafe fn clone_to_uninit(&self, dst: *mut u8) {
+    unsafe fn clone_to_uninit(&self, dest: *mut u8) {
         unsafe {
-            ptr::write(dst.cast(), self.clone());
+            ptr::write(dest.cast(), self.clone());
         }
     }
 }
@@ -97,7 +97,7 @@ unsafe impl<T> Dst for [T] {
 
 unsafe impl<T: Clone> CloneToUninitDst for [T] {
     // Copied from the standard library's implementation.
-    unsafe fn clone_to_uninit(&self, dst: *mut u8) {
+    unsafe fn clone_to_uninit(&self, dest: *mut u8) {
         /// Ownership of a collection of values stored in a non-owned `[MaybeUninit<T>]`, some of which
         /// are not yet initialized. This is sort of like a `Vec` that doesn't own its allocation.
         /// Its responsibility is to provide cleanup on unwind by dropping the values that *are*
@@ -154,7 +154,7 @@ unsafe impl<T: Clone> CloneToUninitDst for [T] {
         // * All bytes pointed to are in MaybeUninit, so we don't care about the memory's
         //   initialization status.
         let uninit_ref = unsafe {
-            &mut *ptr::slice_from_raw_parts_mut(dst.cast::<MaybeUninit<T>>(), self.len())
+            &mut *ptr::slice_from_raw_parts_mut(dest.cast::<MaybeUninit<T>>(), self.len())
         };
 
         // Copy the elements
@@ -186,9 +186,9 @@ unsafe impl Dst for str {
 }
 
 unsafe impl CloneToUninitDst for str {
-    unsafe fn clone_to_uninit(&self, dst: *mut u8) {
+    unsafe fn clone_to_uninit(&self, dest: *mut u8) {
         unsafe {
-            ptr::copy_nonoverlapping(self.as_ptr(), dst, self.len());
+            ptr::copy_nonoverlapping(self.as_ptr(), dest, self.len());
         }
     }
 }
@@ -205,7 +205,7 @@ pub unsafe trait AllocDst<T: ?Sized + Dst>: Sized + Borrow<T> {
     ///
     /// # Safety
     ///
-    /// The `init` function may not panic, otherwise there will be a memory leak.
+    /// The `init` function must correctly initialize the data pointed to.
     unsafe fn new_dst<F, E: Error>(len: usize, init: F) -> Result<Self, AllocDstError<E>>
     where
         F: FnOnce(ptr::NonNull<T>) -> Result<(), E>;
@@ -217,24 +217,46 @@ unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
     where
         F: FnOnce(ptr::NonNull<T>) -> Result<(), E>,
     {
-        let layout = T::layout(len)?;
+        struct RawBox<T: ?Sized + Dst>(ptr::NonNull<T>, Layout);
+
+        impl<T: ?Sized + Dst> RawBox<T> {
+            unsafe fn new(len: usize) -> Result<Self, LayoutError> {
+                let layout = T::layout(len)?;
+                let ptr = unsafe {
+                    if layout.size() == 0 {
+                        // FUTURE: switch to Layout::dangling() when it has stabilised.
+                        ptr::without_provenance_mut(layout.align())
+                    } else {
+                        alloc(layout)
+                    }
+                };
+                let ptr = ptr::NonNull::new(T::retype(ptr, len))
+                    .unwrap_or_else(|| handle_alloc_error(layout));
+
+                Ok(Self(ptr, layout))
+            }
+
+            unsafe fn finalize(self) -> Box<T> {
+                let b = unsafe { Box::from_raw(self.0.as_ptr()) };
+                mem::forget(self);
+                b
+            }
+        }
+
+        impl<T: ?Sized + Dst> Drop for RawBox<T> {
+            fn drop(&mut self) {
+                if self.1.size() != 0 {
+                    unsafe {
+                        dealloc(self.0.cast().as_ptr(), self.1);
+                    };
+                }
+            }
+        }
 
         unsafe {
-            let raw = if layout.size() == 0 {
-                // FUTURE: switch to Layout::dangling() when it has stabilised.
-                ptr::without_provenance_mut(layout.align())
-            } else {
-                alloc(layout)
-            };
-            let ptr = ptr::NonNull::new(T::retype(raw, len))
-                .unwrap_or_else(|| handle_alloc_error(layout));
-            init(ptr).map_err(|e| {
-                if layout.size() != 0 {
-                    dealloc(raw, layout);
-                }
-                AllocDstError::Init(e)
-            })?;
-            Ok(Box::from_raw(ptr.as_ptr()))
+            let b = RawBox::new(len)?;
+            init(b.0).map_err(|e| AllocDstError::Init(e))?;
+            Ok(b.finalize())
         }
     }
 }
