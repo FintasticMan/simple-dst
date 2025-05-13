@@ -59,7 +59,7 @@ unsafe impl Dst for Type {
 }
 
 unsafe impl CloneToUninitDst for Type {
-    unsafe fn clone_to_uninit(&self, dst: *mut u8) {
+    unsafe fn clone_to_uninit(&self, dest: *mut u8) {
         // FUTURE: switch to byte_offset_from_unsigned when it has stabilised.
         let slice_offset = unsafe {
             usize::try_from((&raw const self.slice).byte_offset_from(self)).unwrap_unchecked()
@@ -67,7 +67,7 @@ unsafe impl CloneToUninitDst for Type {
 
         unsafe {
             Self::__dst_impl_write_to_uninit(
-                dst,
+                dest,
                 slice_offset,
                 self.data1.clone(),
                 self.data2.clone(),
@@ -96,7 +96,7 @@ impl Type {
     }
 
     unsafe fn __dst_impl_write_to_uninit(
-        dst: *mut u8,
+        dest: *mut u8,
         slice_offset: usize,
         data1: i16,
         data2: usize,
@@ -104,13 +104,13 @@ impl Type {
         slice: &[i128],
     ) {
         unsafe {
-            slice.clone_to_uninit(dst.add(slice_offset));
+            slice.clone_to_uninit(dest.add(slice_offset));
 
-            dst.add(offset_of!(Self, data1)).cast::<i16>().write(data1);
-            dst.add(offset_of!(Self, data2))
+            dest.add(offset_of!(Self, data1)).cast::<i16>().write(data1);
+            dest.add(offset_of!(Self, data2))
                 .cast::<usize>()
                 .write(data2);
-            dst.add(offset_of!(Self, data3)).cast::<u32>().write(data3);
+            dest.add(offset_of!(Self, data3)).cast::<u32>().write(data3);
         }
     }
 

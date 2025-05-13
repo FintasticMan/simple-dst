@@ -58,7 +58,7 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let idxs: Vec<_> = (0..n_fields).collect();
     let last_idx = n_fields - 1;
-    let first_idxs: Vec<_> = (0..last_idx).collect();
+    let _first_idxs: Vec<_> = (0..last_idx).collect();
 
     let idents: Vec<_> = fields
         .iter()
@@ -77,6 +77,10 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let layout_idents: Vec<_> = idents.iter().map(|f| format_ident!("{f}_layout")).collect();
     let first_layout_idents = &layout_idents[..last_idx];
     let last_layout_ident = &layout_idents[last_idx];
+
+    let offset_idents: Vec<_> = idents.iter().map(|f| format_ident!("{f}_offset")).collect();
+    let _first_offset_idents = &offset_idents[..last_idx];
+    let last_offset_ident = &offset_idents[last_idx];
 
     let tys: Vec<_> = fields
         .iter()
@@ -100,16 +104,9 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 ::core::result::Result::Ok(layout)
             }
 
-            fn retype(ptr: ::core::ptr::NonNull<u8>, len: usize) -> ::core::ptr::NonNull<Self> {
-                // FUTURE: switch to ptr::NonNull:from_raw_parts() when it has stabilised.
-                let ptr = ::core::ptr::NonNull::slice_from_raw_parts(ptr.cast::<()>(), len);
-                unsafe { ::core::ptr::NonNull::new_unchecked(ptr.as_ptr() as *mut _) }
-            }
-
-            unsafe fn clone_to_raw(&self, ptr: ::core::ptr::NonNull<Self>) -> ::core::result::Result<(), ::core::alloc::LayoutError> {
-                unsafe {
-                    Self::__dst_impl_write_to_raw(ptr, #( self.#first_idents ),*, &self.#last_ident)
-                }
+            fn retype(ptr: *mut u8, len: usize) -> *mut Self {
+                // FUTURE: switch to ptr::from_raw_parts_mut() when it has stabilised.
+                ::core::ptr::slice_from_raw_parts_mut(ptr, len) as *mut _
             }
         }
 
@@ -131,18 +128,18 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
             #[doc(hidden)]
             #[inline]
-            unsafe fn __dst_impl_write_to_raw(
-                ptr: ::core::ptr::NonNull<Self>,
+            unsafe fn __dst_impl_write_to_uninit(
+                dest: *mut u8,
+                #last_offset_ident: usize,
                 #( #first_idents: #first_tys ),*,
                 #last_ident: &#last_ty
-            ) -> ::core::result::Result<(), ::core::alloc::LayoutError> {
-                let (layout, offsets) = Self::layout_offsets(<#last_ty as ::simple_dst::Dst>::len(#last_ident))?;
+            ) {
                 unsafe {
-                    let raw = ptr.cast::<u8>();
+                    <#last_ty as ::simple_dst::CloneToUninitDst>::clone_to_uninit(#last_ident, dest.add(#last_offset_ident));
+
                     #(
-                        ::core::ptr::write(raw.add(offsets[#first_idxs]).cast().as_ptr(), #first_idents);
+                        ::core::ptr::write(dest.add(::core::mem::offset_of!(Self, #first_idents)).cast::<#first_tys>(), #first_idents);
                     )*
-                    <#last_ty as ::simple_dst::Dst>::clone_to_raw(#last_ident, <#last_ty as ::simple_dst::Dst>::retype(raw.add(offsets[#n_fields - 1]), ::simple_dst::Dst::len(#last_ident)))?;
                 }
             }
 
@@ -153,7 +150,9 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             ) -> ::core::result::Result<A, ::simple_dst::AllocDstError<::core::alloc::LayoutError>> {
                 unsafe {
                     A::new_dst(<#last_ty as ::simple_dst::Dst>::len(#last_ident), |ptr| {
-                        Self::__dst_impl_write_to_raw(ptr, #( #idents ),*)
+                        let (_, offsets) = Self::__dst_impl_layout_offsets(#last_ident.len())?;
+                        Self::__dst_impl_write_to_uninit(ptr.cast::<u8>().as_ptr(), offsets[#last_idx], #( #idents ),*);
+                        ::core::result::Result::<(), ::core::alloc::LayoutError>::Ok(())
                     })
                 }
             }

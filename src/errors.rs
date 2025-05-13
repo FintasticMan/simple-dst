@@ -1,7 +1,7 @@
 use core::{alloc::LayoutError, error::Error, fmt::Display};
 
 // FUTURE: add Alloc once AllocError has stabilised.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AllocDstError<E: Error + 'static> {
     Layout(LayoutError),
     Init(E),
