@@ -22,7 +22,6 @@ use alloc::{
 use core::{
     alloc::{Layout, LayoutError},
     borrow::Borrow,
-    error::Error,
     mem::{self, MaybeUninit},
     ptr,
 };
@@ -68,7 +67,7 @@ unsafe impl<T: Clone> CloneToUninitDst for T {
     #[inline]
     unsafe fn clone_to_uninit(&self, dest: *mut u8) {
         unsafe {
-            ptr::write(dest.cast(), self.clone());
+            dest.cast::<Self>().write(self.clone());
         }
     }
 }
@@ -188,7 +187,7 @@ unsafe impl Dst for str {
 unsafe impl CloneToUninitDst for str {
     unsafe fn clone_to_uninit(&self, dest: *mut u8) {
         unsafe {
-            ptr::copy_nonoverlapping(self.as_ptr(), dest, self.len());
+            ptr::copy_nonoverlapping(self.as_ptr(), dest.cast(), self.len());
         }
     }
 }
@@ -206,16 +205,16 @@ pub unsafe trait AllocDst<T: ?Sized + Dst>: Sized + Borrow<T> {
     /// # Safety
     ///
     /// The `init` function must correctly initialize the data pointed to.
-    unsafe fn new_dst<F, E: Error>(len: usize, init: F) -> Result<Self, AllocDstError<E>>
+    unsafe fn new_dst<F>(len: usize, init: F) -> Result<Self, AllocDstError>
     where
-        F: FnOnce(ptr::NonNull<T>) -> Result<(), E>;
+        F: FnOnce(ptr::NonNull<T>);
 }
 
 #[cfg(feature = "alloc")]
 unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
-    unsafe fn new_dst<F, E: Error>(len: usize, init: F) -> Result<Self, AllocDstError<E>>
+    unsafe fn new_dst<F>(len: usize, init: F) -> Result<Self, AllocDstError>
     where
-        F: FnOnce(ptr::NonNull<T>) -> Result<(), E>,
+        F: FnOnce(ptr::NonNull<T>),
     {
         struct RawBox<T: ?Sized + Dst>(ptr::NonNull<T>, Layout);
 
@@ -255,7 +254,7 @@ unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
 
         unsafe {
             let b = RawBox::new(len)?;
-            init(b.0).map_err(|e| AllocDstError::Init(e))?;
+            init(b.0);
             Ok(b.finalize())
         }
     }

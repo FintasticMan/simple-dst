@@ -1,4 +1,4 @@
-use core::{convert::Infallible, mem::offset_of};
+use core::mem::offset_of;
 
 use crate::*;
 
@@ -9,7 +9,6 @@ fn str_test() {
     let boxed: Box<str> = unsafe {
         Box::new_dst(str.len(), |ptr| {
             str.clone_to_uninit(ptr.cast().as_ptr());
-            Ok::<(), Infallible>(())
         })
     }
     .unwrap();
@@ -25,7 +24,6 @@ fn zst_test() {
     let boxed: Box<[()]> = unsafe {
         Box::new_dst(arr.len(), |ptr| {
             arr.clone_to_uninit(ptr.cast().as_ptr());
-            Ok::<(), Infallible>(())
         })
     }
     .unwrap();
@@ -115,9 +113,9 @@ impl Type {
     }
 
     fn new_internal(data1: i16, data2: usize, data3: u32, slice: &[i128]) -> Box<Self> {
+        let (_, offsets) = Self::__dst_impl_layout_offsets(slice.len()).unwrap();
         unsafe {
             Box::new_dst(slice.len(), |ptr| {
-                let (_, offsets) = Self::__dst_impl_layout_offsets(slice.len())?;
                 Self::__dst_impl_write_to_uninit(
                     ptr.cast().as_ptr(),
                     offsets[3],
@@ -125,8 +123,7 @@ impl Type {
                     data2,
                     data3,
                     slice,
-                );
-                Ok::<(), LayoutError>(())
+                )
             })
             .unwrap()
         }
@@ -155,7 +152,6 @@ fn clone_test() {
     let v2 = unsafe {
         Box::new_dst(v1.len(), |ptr: ptr::NonNull<Type>| {
             v1.as_ref().clone_to_uninit(ptr.as_ptr().cast());
-            Ok::<(), Infallible>(())
         })
         .unwrap()
     };

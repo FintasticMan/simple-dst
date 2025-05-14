@@ -138,7 +138,7 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     <#last_ty as ::simple_dst::CloneToUninitDst>::clone_to_uninit(#last_ident, dest.add(#last_offset_ident));
 
                     #(
-                        ::core::ptr::write(dest.add(::core::mem::offset_of!(Self, #first_idents)).cast::<#first_tys>(), #first_idents);
+                        dest.add(::core::mem::offset_of!(Self, #first_idents)).cast::<#first_tys>().write(#first_idents);
                     )*
                 }
             }
@@ -147,12 +147,11 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             fn new_internal<A: ::simple_dst::AllocDst<Self>>(
                 #( #first_idents: #first_tys ),*,
                 #last_ident: &#last_ty
-            ) -> ::core::result::Result<A, ::simple_dst::AllocDstError<::core::alloc::LayoutError>> {
+            ) -> ::core::result::Result<A, ::simple_dst::AllocDstError> {
+                let (_, offsets) = Self::__dst_impl_layout_offsets(#last_ident.len())?;
                 unsafe {
                     A::new_dst(<#last_ty as ::simple_dst::Dst>::len(#last_ident), |ptr| {
-                        let (_, offsets) = Self::__dst_impl_layout_offsets(#last_ident.len())?;
-                        Self::__dst_impl_write_to_uninit(ptr.cast::<u8>().as_ptr(), offsets[#last_idx], #( #idents ),*);
-                        ::core::result::Result::<(), ::core::alloc::LayoutError>::Ok(())
+                        Self::__dst_impl_write_to_uninit(ptr.cast::<u8>().as_ptr(), offsets[#last_idx], #( #idents ),*)
                     })
                 }
             }
