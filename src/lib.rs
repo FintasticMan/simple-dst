@@ -5,31 +5,37 @@
 //!
 //! [slice-dst]: https://lib.rs/crates/slice-dst
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(feature = "std")))]
 extern crate alloc;
 
-mod errors;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(feature = "std")))]
 use alloc::{
     alloc::{alloc, dealloc, handle_alloc_error},
     boxed::Box,
 };
+#[cfg(not(feature = "std"))]
 use core::{
     alloc::{Layout, LayoutError},
     borrow::Borrow,
     mem::{self, MaybeUninit},
     ptr,
 };
+#[cfg(feature = "std")]
+use std::{
+    alloc::{Layout, LayoutError, alloc, dealloc, handle_alloc_error},
+    borrow::Borrow,
+    boxed::Box,
+    mem::{self, MaybeUninit},
+    ptr,
+};
 
 #[cfg(feature = "simple-dst-derive")]
-pub use simple_dst_derive::Dst;
-
-pub use errors::*;
+pub use simple_dst_derive::{CloneToUninitDst, CopyDst, Dst};
 
 /// A dynamically sized type.
 ///
@@ -70,6 +76,57 @@ unsafe impl<T: Clone> CloneToUninitDst for T {
             dest.cast::<Self>().write(self.clone());
         }
     }
+}
+
+#[cfg(all(feature = "alloc", not(feature = "std")))]
+#[macro_export]
+macro_rules! impl_to_owned_for {
+    ($ty:ty, $owned:ident) => {
+        impl ::alloc::borrow::ToOwned for $owned<$ty> {
+            type Owned = $owned<$ty>;
+
+            fn to_owned(&self) -> Self::Owned {
+                let layout = ::core::alloc::Layout::for_value(self);
+
+                unsafe {
+                    <$owned<$ty> as ::simple_dst::AllocDst<$ty>>::new_dst(
+                        <$ty as ::simple_dst::Dst>::len(self),
+                        layout,
+                        |ptr| {
+                            let dest = ptr.cast::<u8>().as_ptr();
+
+                            <$ty as ::simple_dst::CloneToUninitDst>::clone_to_uninit(self, dest)
+                        },
+                    )
+                }
+            }
+        }
+    };
+}
+#[cfg(feature = "std")]
+#[macro_export]
+macro_rules! impl_to_owned_for {
+    ($ty:ty, $owned:ident) => {
+        impl ::std::borrow::ToOwned for $owned<$ty> {
+            type Owned = $owned<$ty>;
+
+            fn to_owned(&self) -> Self::Owned {
+                let layout = ::core::alloc::Layout::for_value(self);
+
+                unsafe {
+                    <$owned<$ty> as ::simple_dst::AllocDst<$ty>>::new_dst(
+                        <$ty as ::simple_dst::Dst>::len(self),
+                        layout,
+                        |ptr| {
+                            let dest = ptr.cast::<u8>().as_ptr();
+
+                            <$ty as ::simple_dst::CloneToUninitDst>::clone_to_uninit(self, dest)
+                        },
+                    )
+                }
+            }
+        }
+    };
 }
 
 /// DSTs whose values can be duplicated simply by copying bits.
@@ -205,22 +262,21 @@ pub unsafe trait AllocDst<T: ?Sized + Dst>: Sized + Borrow<T> {
     /// # Safety
     ///
     /// The `init` function must correctly initialize the data pointed to.
-    unsafe fn new_dst<F>(len: usize, init: F) -> Result<Self, AllocDstError>
+    unsafe fn new_dst<F>(len: usize, layout: Layout, init: F) -> Self
     where
         F: FnOnce(ptr::NonNull<T>);
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(any(feature = "alloc", feature = "std"))]
 unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
-    unsafe fn new_dst<F>(len: usize, init: F) -> Result<Self, AllocDstError>
+    unsafe fn new_dst<F>(len: usize, layout: Layout, init: F) -> Self
     where
         F: FnOnce(ptr::NonNull<T>),
     {
         struct RawBox<T: ?Sized + Dst>(ptr::NonNull<T>, Layout);
 
         impl<T: ?Sized + Dst> RawBox<T> {
-            unsafe fn new(len: usize) -> Result<Self, LayoutError> {
-                let layout = T::layout(len)?;
+            unsafe fn new(len: usize, layout: Layout) -> Self {
                 let ptr = unsafe {
                     if layout.size() == 0 {
                         // FUTURE: switch to Layout::dangling() when it has stabilised.
@@ -232,7 +288,7 @@ unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
                 let ptr = ptr::NonNull::new(T::retype(ptr, len))
                     .unwrap_or_else(|| handle_alloc_error(layout));
 
-                Ok(Self(ptr, layout))
+                Self(ptr, layout)
             }
 
             unsafe fn finalize(self) -> Box<T> {
@@ -253,9 +309,9 @@ unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
         }
 
         unsafe {
-            let b = RawBox::new(len)?;
+            let b = RawBox::new(len, layout);
             init(b.0);
-            Ok(b.finalize())
+            b.finalize()
         }
     }
 }

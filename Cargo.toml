@@ -12,9 +12,11 @@ keywords = ["dst", "types", "slice"]
 categories = ["data-structures", "memory-management", "no-std", "no-std::no-alloc", "rust-patterns"]
 
 [dependencies]
-simple-dst-derive = { version = "0.1.0", optional = true, path = "simple-dst-derive" }
+simple-dst-derive = { version = "0.1.0", path = "simple-dst-derive", optional = true }
 
 [features]
 default = ["alloc", "derive"]
 alloc = []
 derive = ["simple-dst-derive"]
+std = []
+simple-dst-derive = ["dep:simple-dst-derive"]

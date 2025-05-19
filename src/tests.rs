@@ -6,12 +6,12 @@ use crate::*;
 #[test]
 fn str_test() {
     let str = "thisisatest";
+    let layout = Layout::for_value(str);
     let boxed: Box<str> = unsafe {
-        Box::new_dst(str.len(), |ptr| {
+        Box::new_dst(str.len(), layout, |ptr| {
             str.clone_to_uninit(ptr.cast().as_ptr());
         })
-    }
-    .unwrap();
+    };
 
     assert_eq!(boxed.len(), str.len());
     assert_eq!(boxed.as_ref(), str);
@@ -21,12 +21,12 @@ fn str_test() {
 #[test]
 fn zst_test() {
     let arr: [(); 0] = [];
+    let layout = Layout::for_value(&arr);
     let boxed: Box<[()]> = unsafe {
-        Box::new_dst(arr.len(), |ptr| {
+        Box::new_dst(arr.len(), layout, |ptr| {
             arr.clone_to_uninit(ptr.cast().as_ptr());
         })
-    }
-    .unwrap();
+    };
 
     assert_eq!(boxed.len(), arr.len());
     assert_eq!(boxed.as_ref(), arr);
@@ -113,9 +113,9 @@ impl Type {
     }
 
     fn new_internal(data1: i16, data2: usize, data3: u32, slice: &[i128]) -> Box<Self> {
-        let (_, offsets) = Self::__dst_impl_layout_offsets(slice.len()).unwrap();
+        let (layout, offsets) = Self::__dst_impl_layout_offsets(slice.len()).unwrap();
         unsafe {
-            Box::new_dst(slice.len(), |ptr| {
+            Box::new_dst(slice.len(), layout, |ptr| {
                 Self::__dst_impl_write_to_uninit(
                     ptr.cast().as_ptr(),
                     offsets[3],
@@ -125,7 +125,6 @@ impl Type {
                     slice,
                 )
             })
-            .unwrap()
         }
     }
 }
@@ -149,11 +148,11 @@ fn complex_test() {
 fn clone_test() {
     let v1 = Type::new_internal(-12, 65537, 50, &[-2, 5, 20]);
 
+    let layout = Layout::for_value(v1.as_ref());
     let v2 = unsafe {
-        Box::new_dst(v1.len(), |ptr: ptr::NonNull<Type>| {
-            v1.as_ref().clone_to_uninit(ptr.as_ptr().cast());
+        Box::new_dst(v1.len(), layout, |ptr: ptr::NonNull<Type>| {
+            v1.as_ref().clone_to_uninit(ptr.cast().as_ptr());
         })
-        .unwrap()
     };
     assert_eq!(v2.data1, v1.data1);
     assert_eq!(v2.data2, v1.data2);
