@@ -17,6 +17,8 @@ mod tests;
 use alloc::{
     alloc::{alloc, dealloc, handle_alloc_error},
     boxed::Box,
+    rc::Rc,
+    sync::Arc,
 };
 #[cfg(not(feature = "std"))]
 use core::{
@@ -32,6 +34,8 @@ use std::{
     boxed::Box,
     mem::{self, MaybeUninit},
     ptr,
+    rc::Rc,
+    sync::Arc,
 };
 
 #[cfg(feature = "simple-dst-derive")]
@@ -313,5 +317,25 @@ unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
             init(b.0);
             b.finalize()
         }
+    }
+}
+
+#[cfg(any(feature = "alloc", feature = "std"))]
+unsafe impl<T: ?Sized + Dst> AllocDst<T> for Rc<T> {
+    unsafe fn new_dst<F>(len: usize, layout: Layout, init: F) -> Self
+    where
+        F: FnOnce(ptr::NonNull<T>),
+    {
+        Self::from(unsafe { Box::new_dst(len, layout, init) })
+    }
+}
+
+#[cfg(any(feature = "alloc", feature = "std"))]
+unsafe impl<T: ?Sized + Dst> AllocDst<T> for Arc<T> {
+    unsafe fn new_dst<F>(len: usize, layout: Layout, init: F) -> Self
+    where
+        F: FnOnce(ptr::NonNull<T>),
+    {
+        Self::from(unsafe { Box::new_dst(len, layout, init) })
     }
 }
