@@ -85,21 +85,21 @@ unsafe impl<T: Clone> CloneToUninitDst for T {
 #[cfg(all(feature = "alloc", not(feature = "std")))]
 #[macro_export]
 macro_rules! impl_to_owned_for {
-    ($ty:ty, $owned:ident) => {
-        impl ::alloc::borrow::ToOwned for $owned<$ty> {
-            type Owned = $owned<$ty>;
+    ($ty:ty, $owned:ty) => {
+        impl ::alloc::borrow::ToOwned for $ty {
+            type Owned = $owned;
 
             fn to_owned(&self) -> Self::Owned {
                 let layout = ::core::alloc::Layout::for_value(self);
 
                 unsafe {
-                    <$owned<$ty> as ::simple_dst::AllocDst<$ty>>::new_dst(
-                        <$ty as ::simple_dst::Dst>::len(self),
+                    <$owned as $crate::AllocDst<$ty>>::new_dst(
+                        <$ty as $crate::Dst>::len(self),
                         layout,
                         |ptr| {
                             let dest = ptr.cast::<u8>().as_ptr();
 
-                            <$ty as ::simple_dst::CloneToUninitDst>::clone_to_uninit(self, dest)
+                            <$ty as $crate::CloneToUninitDst>::clone_to_uninit(self, dest)
                         },
                     )
                 }
@@ -110,21 +110,21 @@ macro_rules! impl_to_owned_for {
 #[cfg(feature = "std")]
 #[macro_export]
 macro_rules! impl_to_owned_for {
-    ($ty:ty, $owned:ident) => {
-        impl ::std::borrow::ToOwned for $owned<$ty> {
-            type Owned = $owned<$ty>;
+    ($ty:ty, $owned:ty) => {
+        impl ::std::borrow::ToOwned for $ty {
+            type Owned = $owned;
 
             fn to_owned(&self) -> Self::Owned {
                 let layout = ::core::alloc::Layout::for_value(self);
 
                 unsafe {
-                    <$owned<$ty> as ::simple_dst::AllocDst<$ty>>::new_dst(
-                        <$ty as ::simple_dst::Dst>::len(self),
+                    <$owned as $crate::AllocDst<$ty>>::new_dst(
+                        <$ty as $crate::Dst>::len(self),
                         layout,
                         |ptr| {
                             let dest = ptr.cast::<u8>().as_ptr();
 
-                            <$ty as ::simple_dst::CloneToUninitDst>::clone_to_uninit(self, dest)
+                            <$ty as $crate::CloneToUninitDst>::clone_to_uninit(self, dest)
                         },
                     )
                 }
