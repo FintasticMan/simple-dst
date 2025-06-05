@@ -56,7 +56,7 @@ unsafe impl Dst for Type {
     }
 }
 
-unsafe impl CloneToUninitDst for Type {
+unsafe impl CloneToUninit for Type {
     unsafe fn clone_to_uninit(&self, dest: *mut u8) {
         // FUTURE: switch to byte_offset_from_unsigned when it has stabilised.
         let slice_offset = unsafe {

@@ -27,6 +27,7 @@ use core::{
     mem::{self, MaybeUninit},
     ptr,
 };
+use core::{convert::Infallible, error::Error};
 #[cfg(feature = "std")]
 use std::{
     alloc::{Layout, LayoutError, alloc, dealloc, handle_alloc_error},
@@ -39,7 +40,7 @@ use std::{
 };
 
 #[cfg(feature = "simple-dst-derive")]
-pub use simple_dst_derive::{CloneToUninitDst, CopyDst, Dst};
+pub use simple_dst_derive::{CloneToUninit, Dst};
 
 /// A dynamically sized type.
 ///
@@ -67,80 +68,6 @@ pub unsafe trait Dst {
     fn retype(ptr: *mut u8, len: usize) -> *mut Self;
 }
 
-/// A generalization of [`Clone`] to dynamically-sized types stored in arbitrary containers.
-// FUTURE: switch to `CloneToUninit` when it is stabilised.
-pub unsafe trait CloneToUninitDst {
-    unsafe fn clone_to_uninit(&self, dest: *mut u8);
-}
-
-unsafe impl<T: Clone> CloneToUninitDst for T {
-    #[inline]
-    unsafe fn clone_to_uninit(&self, dest: *mut u8) {
-        unsafe {
-            dest.cast::<Self>().write(self.clone());
-        }
-    }
-}
-
-#[cfg(all(feature = "alloc", not(feature = "std")))]
-#[macro_export]
-macro_rules! impl_to_owned_for {
-    ($ty:ty, $owned:ty) => {
-        impl ::alloc::borrow::ToOwned for $ty {
-            type Owned = $owned;
-
-            fn to_owned(&self) -> Self::Owned {
-                let layout = ::core::alloc::Layout::for_value(self);
-
-                unsafe {
-                    <$owned as $crate::AllocDst<$ty>>::new_dst(
-                        <$ty as $crate::Dst>::len(self),
-                        layout,
-                        |ptr| {
-                            let dest = ptr.cast::<u8>().as_ptr();
-
-                            <$ty as $crate::CloneToUninitDst>::clone_to_uninit(self, dest)
-                        },
-                    )
-                }
-            }
-        }
-    };
-}
-#[cfg(feature = "std")]
-#[macro_export]
-macro_rules! impl_to_owned_for {
-    ($ty:ty, $owned:ty) => {
-        impl ::std::borrow::ToOwned for $ty {
-            type Owned = $owned;
-
-            fn to_owned(&self) -> Self::Owned {
-                let layout = ::core::alloc::Layout::for_value(self);
-
-                unsafe {
-                    <$owned as $crate::AllocDst<$ty>>::new_dst(
-                        <$ty as $crate::Dst>::len(self),
-                        layout,
-                        |ptr| {
-                            let dest = ptr.cast::<u8>().as_ptr();
-
-                            <$ty as $crate::CloneToUninitDst>::clone_to_uninit(self, dest)
-                        },
-                    )
-                }
-            }
-        }
-    };
-}
-
-/// DSTs whose values can be duplicated simply by copying bits.
-///
-/// This exists because to implement `Copy` you need to implement `Clone` which
-/// is impossible for DSTs.
-pub trait CopyDst: CloneToUninitDst {}
-
-impl<T: Copy + CloneToUninitDst> CopyDst for T {}
-
 unsafe impl<T> Dst for [T] {
     fn len(&self) -> usize {
         self.len()
@@ -155,7 +82,37 @@ unsafe impl<T> Dst for [T] {
     }
 }
 
-unsafe impl<T: Clone> CloneToUninitDst for [T] {
+unsafe impl Dst for str {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn layout(len: usize) -> Result<Layout, LayoutError> {
+        Layout::array::<u8>(len)
+    }
+
+    fn retype(ptr: *mut u8, len: usize) -> *mut Self {
+        // FUTURE: switch to ptr::from_raw_parts_mut() when it has stabilised.
+        ptr::slice_from_raw_parts_mut(ptr, len) as *mut _
+    }
+}
+
+/// A generalization of [`Clone`] to dynamically-sized types stored in arbitrary containers.
+// FUTURE: switch to `CloneToUninit` when it is stabilised.
+pub unsafe trait CloneToUninit {
+    unsafe fn clone_to_uninit(&self, dest: *mut u8);
+}
+
+unsafe impl<T: Clone> CloneToUninit for T {
+    #[inline]
+    unsafe fn clone_to_uninit(&self, dest: *mut u8) {
+        unsafe {
+            dest.cast::<Self>().write(self.clone());
+        }
+    }
+}
+
+unsafe impl<T: Clone> CloneToUninit for [T] {
     // Copied from the standard library's implementation.
     unsafe fn clone_to_uninit(&self, dest: *mut u8) {
         /// Ownership of a collection of values stored in a non-owned `[MaybeUninit<T>]`, some of which
@@ -230,27 +187,63 @@ unsafe impl<T: Clone> CloneToUninitDst for [T] {
     }
 }
 
-unsafe impl Dst for str {
-    fn len(&self) -> usize {
-        self.len()
-    }
-
-    fn layout(len: usize) -> Result<Layout, LayoutError> {
-        Layout::array::<u8>(len)
-    }
-
-    fn retype(ptr: *mut u8, len: usize) -> *mut Self {
-        // FUTURE: switch to ptr::from_raw_parts_mut() when it has stabilised.
-        ptr::slice_from_raw_parts_mut(ptr, len) as *mut _
-    }
-}
-
-unsafe impl CloneToUninitDst for str {
+unsafe impl CloneToUninit for str {
     unsafe fn clone_to_uninit(&self, dest: *mut u8) {
         unsafe {
             ptr::copy_nonoverlapping(self.as_ptr(), dest.cast(), self.len());
         }
     }
+}
+
+#[cfg(all(feature = "alloc", not(feature = "std")))]
+#[macro_export]
+macro_rules! impl_to_owned_for {
+    ($ty:ty, $owned:ty) => {
+        impl ::alloc::borrow::ToOwned for $ty {
+            type Owned = $owned;
+
+            fn to_owned(&self) -> Self::Owned {
+                let layout = ::core::alloc::Layout::for_value(self);
+
+                unsafe {
+                    <$owned as $crate::AllocDst<$ty>>::new_dst(
+                        <$ty as $crate::Dst>::len(self),
+                        layout,
+                        |ptr| {
+                            let dest = ptr.cast::<u8>().as_ptr();
+
+                            <$ty as $crate::CloneToUninit>::clone_to_uninit(self, dest)
+                        },
+                    )
+                }
+            }
+        }
+    };
+}
+#[cfg(feature = "std")]
+#[macro_export]
+macro_rules! impl_to_owned_for {
+    ($ty:ty, $owned:ty) => {
+        impl ::std::borrow::ToOwned for $ty {
+            type Owned = $owned;
+
+            fn to_owned(&self) -> Self::Owned {
+                let layout = ::core::alloc::Layout::for_value(self);
+
+                unsafe {
+                    <$owned as $crate::AllocDst<$ty>>::new_dst(
+                        <$ty as $crate::Dst>::len(self),
+                        layout,
+                        |ptr| {
+                            let dest = ptr.cast::<u8>().as_ptr();
+
+                            <$ty as $crate::CloneToUninit>::clone_to_uninit(self, dest)
+                        },
+                    )
+                }
+            }
+        }
+    };
 }
 
 /// Type that can allocate a DST and store it inside it.
@@ -261,6 +254,17 @@ unsafe impl CloneToUninitDst for str {
 // FUTURE: use the Allocator trait once it has stabilised.
 pub unsafe trait AllocDst<T: ?Sized + Dst>: Sized + Borrow<T> {
     /// Allocate the DST with the given length, initialize the data with the
+    /// given fallible function, and store it in the type.
+    ///
+    /// # Safety
+    ///
+    /// The `init` function must correctly initialize the data pointed to, or return an
+    /// error.
+    unsafe fn try_new_dst<F, E: Error>(len: usize, layout: Layout, init: F) -> Result<Self, E>
+    where
+        F: FnOnce(ptr::NonNull<T>) -> Result<(), E>;
+
+    /// Allocate the DST with the given length, initialize the data with the
     /// given function, and store it in the type.
     ///
     /// # Safety
@@ -268,14 +272,22 @@ pub unsafe trait AllocDst<T: ?Sized + Dst>: Sized + Borrow<T> {
     /// The `init` function must correctly initialize the data pointed to.
     unsafe fn new_dst<F>(len: usize, layout: Layout, init: F) -> Self
     where
-        F: FnOnce(ptr::NonNull<T>);
+        F: FnOnce(ptr::NonNull<T>),
+    {
+        unsafe {
+            match Self::try_new_dst(len, layout, |ptr| Ok::<(), Infallible>(init(ptr))) {
+                Ok(a) => a,
+                Err(infallible) => match infallible {},
+            }
+        }
+    }
 }
 
 #[cfg(any(feature = "alloc", feature = "std"))]
 unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
-    unsafe fn new_dst<F>(len: usize, layout: Layout, init: F) -> Self
+    unsafe fn try_new_dst<F, E: Error>(len: usize, layout: Layout, init: F) -> Result<Self, E>
     where
-        F: FnOnce(ptr::NonNull<T>),
+        F: FnOnce(ptr::NonNull<T>) -> Result<(), E>,
     {
         struct RawBox<T: ?Sized + Dst>(ptr::NonNull<T>, Layout);
 
@@ -314,28 +326,28 @@ unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
 
         unsafe {
             let b = RawBox::new(len, layout);
-            init(b.0);
-            b.finalize()
+            init(b.0)?;
+            Ok(b.finalize())
         }
     }
 }
 
 #[cfg(any(feature = "alloc", feature = "std"))]
 unsafe impl<T: ?Sized + Dst> AllocDst<T> for Rc<T> {
-    unsafe fn new_dst<F>(len: usize, layout: Layout, init: F) -> Self
+    unsafe fn try_new_dst<F, E: Error>(len: usize, layout: Layout, init: F) -> Result<Self, E>
     where
-        F: FnOnce(ptr::NonNull<T>),
+        F: FnOnce(ptr::NonNull<T>) -> Result<(), E>,
     {
-        Self::from(unsafe { Box::new_dst(len, layout, init) })
+        Ok(Self::from(unsafe { Box::try_new_dst(len, layout, init) }?))
     }
 }
 
 #[cfg(any(feature = "alloc", feature = "std"))]
 unsafe impl<T: ?Sized + Dst> AllocDst<T> for Arc<T> {
-    unsafe fn new_dst<F>(len: usize, layout: Layout, init: F) -> Self
+    unsafe fn try_new_dst<F, E: Error>(len: usize, layout: Layout, init: F) -> Result<Self, E>
     where
-        F: FnOnce(ptr::NonNull<T>),
+        F: FnOnce(ptr::NonNull<T>) -> Result<(), E>,
     {
-        Self::from(unsafe { Box::new_dst(len, layout, init) })
+        Ok(Self::from(unsafe { Box::try_new_dst(len, layout, init) }?))
     }
 }
