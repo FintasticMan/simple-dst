@@ -39,6 +39,13 @@ impl IdentFragment for FieldIdent {
             Self::Index(index) => index.fmt(f),
         }
     }
+
+    fn span(&self) -> Option<proc_macro2::Span> {
+        match self {
+            Self::Ident(ident) => IdentFragment::span(ident),
+            Self::Index(index) => IdentFragment::span(index),
+        }
+    }
 }
 
 impl ToTokens for FieldIdent {
@@ -84,7 +91,7 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     if !is_repr_c(&input.attrs) {
-        return quote! {compile_error!("type must be `repr(C)`")}.into();
+        return quote! { compile_error!("type must be `repr(C)`") }.into();
     }
 
     let name = input.ident;
@@ -93,7 +100,7 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let fields = get_fields(&input.data);
     if fields.is_empty() {
-        return quote! {compile_error!("type must have at least one field")}.into();
+        return quote! { compile_error!("type must have at least one field") }.into();
     }
 
     let n_fields = fields.len();
@@ -151,8 +158,7 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 ::core::result::Result::Ok((layout.pad_to_align(), offsets))
             }
 
-            #[inline]
-            fn new_internal<A: ::simple_dst::AllocDst<Self>>(
+            unsafe fn new_unchecked<A: ::simple_dst::AllocDst<Self>>(
                 #( #first_idents: #first_tys ),*,
                 #last_ident: &#last_ty
             ) -> ::core::result::Result<A, ::core::alloc::LayoutError> {
