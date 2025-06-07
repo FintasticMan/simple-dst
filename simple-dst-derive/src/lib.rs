@@ -73,8 +73,8 @@ fn get_fields(data: &Data) -> Vec<Field> {
 }
 
 struct DstAttrs {
-    simple_dst_crate: Option<Path>,
-    new_unchecked_vis: Option<Visibility>,
+    simple_dst_crate: Path,
+    new_unchecked_vis: Visibility,
 }
 
 fn get_dst_attrs(attrs: &[Attribute]) -> syn::Result<DstAttrs> {
@@ -83,10 +83,8 @@ fn get_dst_attrs(attrs: &[Attribute]) -> syn::Result<DstAttrs> {
         syn::custom_keyword!(new_unchecked_vis);
     }
 
-    let mut dst_attrs = DstAttrs {
-        simple_dst_crate: None,
-        new_unchecked_vis: None,
-    };
+    let mut simple_dst_crate: Option<Path> = None;
+    let mut new_unchecked_vis: Option<Visibility> = None;
     for attr in attrs {
         if !attr.path().is_ident("dst") {
             continue;
@@ -95,27 +93,29 @@ fn get_dst_attrs(attrs: &[Attribute]) -> syn::Result<DstAttrs> {
         attr.parse_args_with(|input: ParseStream| {
             let lookahead = input.lookahead1();
             if lookahead.peek(kw::simple_dst_crate) {
-                input.parse::<kw::simple_dst_crate>()?;
-                input.parse::<Token![=]>()?;
-                let simple_dst_crate = input.parse()?;
-                if dst_attrs.simple_dst_crate.is_some() {
+                if simple_dst_crate.is_some() {
                     return Err(syn::Error::new_spanned(
                         attr,
                         "only one #[dst(simple_dst_crate = ...)] is allowed",
                     ));
                 }
-                dst_attrs.simple_dst_crate = Some(simple_dst_crate);
+                simple_dst_crate = Some({
+                    input.parse::<kw::simple_dst_crate>()?;
+                    input.parse::<Token![=]>()?;
+                    input.parse()?
+                })
             } else if lookahead.peek(kw::new_unchecked_vis) {
-                input.parse::<kw::new_unchecked_vis>()?;
-                input.parse::<Token![=]>()?;
-                let new_unchecked_vis = input.parse()?;
-                if dst_attrs.new_unchecked_vis.is_some() {
+                if new_unchecked_vis.is_some() {
                     return Err(syn::Error::new_spanned(
                         attr,
                         "only one #[dst(new_unchecked_vis = ...)] is allowed",
                     ));
                 }
-                dst_attrs.new_unchecked_vis = Some(new_unchecked_vis);
+                new_unchecked_vis = Some({
+                    input.parse::<kw::new_unchecked_vis>()?;
+                    input.parse::<Token![=]>()?;
+                    input.parse()?
+                })
             } else {
                 return Err(Error::new_spanned(
                     attr,
@@ -125,6 +125,11 @@ fn get_dst_attrs(attrs: &[Attribute]) -> syn::Result<DstAttrs> {
             Ok(())
         })?
     }
+
+    let dst_attrs = DstAttrs {
+        simple_dst_crate: simple_dst_crate.unwrap_or_else(|| parse_quote! { ::simple_dst }),
+        new_unchecked_vis: new_unchecked_vis.unwrap_or(Visibility::Inherited),
+    };
     Ok(dst_attrs)
 }
 
@@ -138,14 +143,11 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let name = input.ident;
 
-    let (simple_dst_crate, new_unchecked_vis) = match get_dst_attrs(&input.attrs) {
-        Ok(DstAttrs {
-            simple_dst_crate,
-            new_unchecked_vis,
-        }) => (
-            simple_dst_crate.unwrap_or_else(|| parse_quote! { ::simple_dst }),
-            new_unchecked_vis.unwrap_or(Visibility::Inherited),
-        ),
+    let DstAttrs {
+        simple_dst_crate,
+        new_unchecked_vis,
+    } = match get_dst_attrs(&input.attrs) {
+        Ok(dst_attrs) => dst_attrs,
         Err(e) => return e.into_compile_error().into(),
     };
 
@@ -240,10 +242,10 @@ pub fn derive_clone_to_uninit(input: proc_macro::TokenStream) -> proc_macro::Tok
 
     let name = input.ident;
 
-    let simple_dst_crate = match get_dst_attrs(&input.attrs) {
-        Ok(DstAttrs {
-            simple_dst_crate, ..
-        }) => simple_dst_crate.unwrap_or_else(|| parse_quote! { ::simple_dst }),
+    let DstAttrs {
+        simple_dst_crate, ..
+    } = match get_dst_attrs(&input.attrs) {
+        Ok(dst_attrs) => dst_attrs,
         Err(e) => return e.into_compile_error().into(),
     };
 
@@ -294,20 +296,18 @@ pub fn derive_clone_to_uninit(input: proc_macro::TokenStream) -> proc_macro::Tok
 }
 
 struct ToOwnedAttrs {
-    owned: Option<Type>,
-    to_owned_crate: Option<Path>,
+    to_owned_crate: Path,
+    owned: Type,
 }
 
-fn get_to_owned_attrs(attrs: &[Attribute]) -> syn::Result<ToOwnedAttrs> {
+fn get_to_owned_attrs(attrs: &[Attribute], name: &Ident) -> syn::Result<ToOwnedAttrs> {
     mod kw {
-        syn::custom_keyword!(owned);
         syn::custom_keyword!(to_owned_crate);
+        syn::custom_keyword!(owned);
     }
 
-    let mut to_owned_attrs = ToOwnedAttrs {
-        owned: None,
-        to_owned_crate: None,
-    };
+    let mut to_owned_crate: Option<Path> = None;
+    let mut owned: Option<Type> = None;
     for attr in attrs {
         if !attr.path().is_ident("to_owned") {
             continue;
@@ -315,28 +315,30 @@ fn get_to_owned_attrs(attrs: &[Attribute]) -> syn::Result<ToOwnedAttrs> {
 
         attr.parse_args_with(|input: ParseStream| {
             let lookahead = input.lookahead1();
-            if lookahead.peek(kw::owned) {
-                input.parse::<kw::owned>()?;
-                input.parse::<Token![=]>()?;
-                let owned = input.parse()?;
-                if to_owned_attrs.owned.is_some() {
-                    return Err(syn::Error::new_spanned(
-                        attr,
-                        "only one #[to_owned(owned = ...)] is allowed",
-                    ));
-                }
-                to_owned_attrs.owned = Some(owned);
-            } else if lookahead.peek(kw::to_owned_crate) {
-                input.parse::<kw::to_owned_crate>()?;
-                input.parse::<Token![=]>()?;
-                let to_owned_crate = input.parse()?;
-                if to_owned_attrs.to_owned_crate.is_some() {
+            if lookahead.peek(kw::to_owned_crate) {
+                if to_owned_crate.is_some() {
                     return Err(syn::Error::new_spanned(
                         attr,
                         "only one #[to_owned(to_owned_crate = ...)] is allowed",
                     ));
                 }
-                to_owned_attrs.to_owned_crate = Some(to_owned_crate);
+                to_owned_crate = Some({
+                    input.parse::<kw::to_owned_crate>()?;
+                    input.parse::<Token![=]>()?;
+                    input.parse()?
+                });
+            } else if lookahead.peek(kw::owned) {
+                if owned.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        attr,
+                        "only one #[to_owned(owned = ...)] is allowed",
+                    ));
+                }
+                owned = Some({
+                    input.parse::<kw::owned>()?;
+                    input.parse::<Token![=]>()?;
+                    input.parse()?
+                })
             } else {
                 return Err(Error::new_spanned(
                     attr,
@@ -346,6 +348,11 @@ fn get_to_owned_attrs(attrs: &[Attribute]) -> syn::Result<ToOwnedAttrs> {
             Ok(())
         })?
     }
+
+    let to_owned_attrs = ToOwnedAttrs {
+        to_owned_crate: to_owned_crate.unwrap_or_else(|| parse_quote! { ::alloc::borrow }),
+        owned: owned.unwrap_or_else(|| parse_quote! { Box<#name> }),
+    };
     Ok(to_owned_attrs)
 }
 
@@ -355,20 +362,17 @@ pub fn derive_to_owned(input: proc_macro::TokenStream) -> proc_macro::TokenStrea
 
     let name = input.ident;
 
-    let simple_dst_crate = match get_dst_attrs(&input.attrs) {
-        Ok(DstAttrs {
-            simple_dst_crate, ..
-        }) => simple_dst_crate.unwrap_or_else(|| parse_quote! { ::simple_dst }),
+    let DstAttrs {
+        simple_dst_crate, ..
+    } = match get_dst_attrs(&input.attrs) {
+        Ok(dst_attrs) => dst_attrs,
         Err(e) => return e.into_compile_error().into(),
     };
-    let (owned, to_owned_crate) = match get_to_owned_attrs(&input.attrs) {
-        Ok(ToOwnedAttrs {
-            owned,
-            to_owned_crate,
-        }) => (
-            owned.unwrap_or(parse_quote! { Box<#name> }),
-            to_owned_crate.unwrap_or(parse_quote! { ::alloc::borrow }),
-        ),
+    let ToOwnedAttrs {
+        to_owned_crate,
+        owned,
+    } = match get_to_owned_attrs(&input.attrs, &name) {
+        Ok(to_owned_attrs) => to_owned_attrs,
         Err(e) => return e.into_compile_error().into(),
     };
 
