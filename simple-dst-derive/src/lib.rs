@@ -1,16 +1,37 @@
+use proc_macro2::{Span, TokenStream};
 use quote::{IdentFragment, ToTokens, format_ident, quote};
 use syn::{
-    Attribute, Data, DataStruct, DeriveInput, Error, Fields, FieldsNamed, FieldsUnnamed, Ident,
-    Index, Path, Token, Type, Visibility, parse::ParseStream, parse_macro_input, parse_quote,
+    Attribute, Data, DataEnum, DataStruct, DataUnion, DeriveInput, Error, Fields, FieldsNamed,
+    FieldsUnnamed, GenericParam, Generics, Ident, Index, Path, Token, Type, Visibility,
+    parse_macro_input, parse_quote,
 };
 
-fn is_repr_c(attrs: &[Attribute]) -> bool {
-    mod kw {
-        syn::custom_keyword!(C);
+fn require_repr_c(attrs: &[Attribute]) -> syn::Result<()> {
+    let mut found = false;
+    for attr in attrs {
+        if !attr.path().is_ident("repr") {
+            continue;
+        }
+
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("C") {
+            } else {
+                return Err(meta.error("only #[repr(C)] is supported"));
+            }
+            Ok(())
+        })?;
+        if found {
+            return Err(syn::Error::new_spanned(attr, "only one #[repr(C)] allowed"));
+        }
+        found = true;
     }
-    attrs
-        .iter()
-        .any(|a| a.path().is_ident("repr") && a.parse_args::<kw::C>().is_ok())
+    if !found {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "type must be #[repr(C)]",
+        ));
+    }
+    Ok(())
 }
 
 enum FieldIdent {
@@ -48,9 +69,11 @@ struct Field {
     ty: Type,
 }
 
-fn get_fields(data: &Data) -> Vec<Field> {
-    match data {
-        Data::Struct(DataStruct { fields, .. }) => match fields {
+fn get_fields(data: &Data) -> syn::Result<Vec<Field>> {
+    Ok(match data {
+        Data::Struct(DataStruct {
+            fields, semi_token, ..
+        }) => match fields {
             Fields::Named(FieldsNamed { named, .. }) => named
                 .iter()
                 .map(|f| Field {
@@ -66,96 +89,128 @@ fn get_fields(data: &Data) -> Vec<Field> {
                     ty: f.ty.clone(),
                 })
                 .collect(),
-            _ => unimplemented!(),
+            _ => {
+                return Err(Error::new_spanned(
+                    semi_token,
+                    "type must not be a unit struct",
+                ));
+            }
         },
-        _ => unimplemented!(),
-    }
+        Data::Enum(DataEnum { enum_token, .. }) => {
+            return Err(Error::new_spanned(enum_token, "only structs are supported"));
+        }
+        Data::Union(DataUnion { union_token, .. }) => {
+            return Err(Error::new_spanned(
+                union_token,
+                "only structs are supported",
+            ));
+        }
+    })
 }
 
 struct DstAttrs {
-    simple_dst_crate: Path,
+    simple_dst_path: Path,
     new_unchecked_vis: Visibility,
 }
 
 fn get_dst_attrs(attrs: &[Attribute]) -> syn::Result<DstAttrs> {
-    mod kw {
-        syn::custom_keyword!(simple_dst_crate);
-        syn::custom_keyword!(new_unchecked_vis);
-    }
-
-    let mut simple_dst_crate: Option<Path> = None;
+    let mut simple_dst_path: Option<Path> = None;
     let mut new_unchecked_vis: Option<Visibility> = None;
     for attr in attrs {
         if !attr.path().is_ident("dst") {
             continue;
         }
 
-        attr.parse_args_with(|input: ParseStream| {
-            let lookahead = input.lookahead1();
-            if lookahead.peek(kw::simple_dst_crate) {
-                if simple_dst_crate.is_some() {
-                    return Err(syn::Error::new_spanned(
-                        attr,
-                        "only one #[dst(simple_dst_crate = ...)] is allowed",
-                    ));
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("simple_dst_path") {
+                if simple_dst_path.is_some() {
+                    return Err(meta.error("only one #[dst(simple_dst_path = ...)] is allowed"));
                 }
-                simple_dst_crate = Some({
-                    input.parse::<kw::simple_dst_crate>()?;
-                    input.parse::<Token![=]>()?;
-                    input.parse()?
+                simple_dst_path = Some({
+                    meta.input.parse::<Token![=]>()?;
+                    meta.input.parse()?
                 })
-            } else if lookahead.peek(kw::new_unchecked_vis) {
+            } else if meta.path.is_ident("new_unchecked_vis") {
                 if new_unchecked_vis.is_some() {
-                    return Err(syn::Error::new_spanned(
-                        attr,
-                        "only one #[dst(new_unchecked_vis = ...)] is allowed",
-                    ));
+                    return Err(meta.error("only one #[dst(new_unchecked_vis = ...)] is allowed"));
                 }
                 new_unchecked_vis = Some({
-                    input.parse::<kw::new_unchecked_vis>()?;
-                    input.parse::<Token![=]>()?;
-                    input.parse()?
+                    meta.input.parse::<Token![=]>()?;
+                    meta.input.parse()?
                 })
             } else {
-                return Err(Error::new_spanned(
-                    attr,
-                    "unrecognised #[dst(...)] argument",
-                ));
+                return Err(meta.error("unrecognised #[dst(...)] argument"));
             }
             Ok(())
-        })?
+        })?;
     }
 
     let dst_attrs = DstAttrs {
-        simple_dst_crate: simple_dst_crate.unwrap_or_else(|| parse_quote! { ::simple_dst }),
+        simple_dst_path: simple_dst_path.unwrap_or_else(|| parse_quote! { ::simple_dst }),
         new_unchecked_vis: new_unchecked_vis.unwrap_or(Visibility::Inherited),
     };
     Ok(dst_attrs)
 }
 
+fn has_dst_attr(attrs: &[Attribute]) -> syn::Result<bool> {
+    let mut found = false;
+    for attr in attrs {
+        if !attr.path().is_ident("dst") {
+            continue;
+        }
+
+        attr.meta.require_path_only()?;
+        if found {
+            return Err(Error::new_spanned(attr, "only one #[dst] is allowed"));
+        }
+        found = true;
+    }
+    Ok(found)
+}
+
+fn add_dst_trait_bounds(mut generics: Generics, simple_dst_path: &Path) -> syn::Result<Generics> {
+    for param in &mut generics.params {
+        if let GenericParam::Type(ref mut type_param) = *param {
+            if has_dst_attr(&type_param.attrs)? {
+                type_param
+                    .bounds
+                    .push(parse_quote! { #simple_dst_path::Dst });
+                type_param
+                    .bounds
+                    .push(parse_quote! { #simple_dst_path::CloneToUninit });
+            };
+        }
+    }
+    Ok(generics)
+}
+
 #[proc_macro_derive(Dst, attributes(dst))]
 pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    derive_dst_impl(input)
+        .unwrap_or_else(|e| e.into_compile_error())
+        .into()
+}
 
-    if !is_repr_c(&input.attrs) {
-        return quote! { compile_error!("type must be `repr(C)`") }.into();
-    }
+fn derive_dst_impl(input: DeriveInput) -> syn::Result<TokenStream> {
+    require_repr_c(&input.attrs)?;
 
     let name = input.ident;
 
     let DstAttrs {
-        simple_dst_crate,
+        simple_dst_path,
         new_unchecked_vis,
-    } = match get_dst_attrs(&input.attrs) {
-        Ok(dst_attrs) => dst_attrs,
-        Err(e) => return e.into_compile_error().into(),
-    };
+    } = get_dst_attrs(&input.attrs)?;
 
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let generics = add_dst_trait_bounds(input.generics, &simple_dst_path)?;
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let fields = get_fields(&input.data);
+    let fields = get_fields(&input.data)?;
     if fields.is_empty() {
-        return quote! { compile_error!("type must have at least one field") }.into();
+        return Err(Error::new_spanned(
+            name,
+            "type must have at least one field",
+        ));
     }
 
     let n_fields = fields.len();
@@ -179,11 +234,11 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let first_tys = &tys[..last_idx];
     let last_ty = &tys[last_idx];
 
-    let expanded = quote! {
+    Ok(quote! {
         #[automatically_derived]
-        unsafe impl #impl_generics #simple_dst_crate::Dst for #name #ty_generics #where_clause {
+        unsafe impl #impl_generics #simple_dst_path::Dst for #name #ty_generics #where_clause {
             fn len(&self) -> usize {
-                #simple_dst_crate::Dst::len(&self.#last_ident)
+                #simple_dst_path::Dst::len(&self.#last_ident)
             }
 
             fn layout(len: usize) -> ::core::result::Result<::core::alloc::Layout, ::core::alloc::LayoutError> {
@@ -203,7 +258,7 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             #[inline]
             fn __dst_impl_layout_offsets(len: usize) -> ::core::result::Result<(::core::alloc::Layout, [usize; #n_fields]), ::core::alloc::LayoutError> {
                 #( let #first_layout_idents = ::core::alloc::Layout::new::<#first_tys>(); )*
-                let #last_layout_ident = <#last_ty as #simple_dst_crate::Dst>::layout(len)?;
+                let #last_layout_ident = <#last_ty as #simple_dst_path::Dst>::layout(len)?;
                 let mut offsets = [0; #n_fields];
                 let layout = ::core::alloc::Layout::from_size_align(0, 1)?;
                 #(
@@ -213,16 +268,16 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 ::core::result::Result::Ok((layout.pad_to_align(), offsets))
             }
 
-            #new_unchecked_vis unsafe fn new_unchecked<A: #simple_dst_crate::AllocDst<Self>>(
+            #new_unchecked_vis unsafe fn new_unchecked<A: #simple_dst_path::AllocDst<Self>>(
                 #( #first_idents: #first_tys ),*,
                 #last_ident: &#last_ty
             ) -> ::core::result::Result<A, ::core::alloc::LayoutError> {
                 let (layout, offsets) = Self::__dst_impl_layout_offsets(#last_ident.len())?;
                 Ok(unsafe {
-                    A::new_dst(<#last_ty as #simple_dst_crate::Dst>::len(#last_ident), layout, |ptr| {
+                    A::new_dst(<#last_ty as #simple_dst_path::Dst>::len(#last_ident), layout, |ptr| {
                         let dest = ptr.cast::<u8>().as_ptr();
 
-                        <#last_ty as #simple_dst_crate::CloneToUninit>::clone_to_uninit(#last_ident, dest.add(offsets[#last_idx]));
+                        <#last_ty as #simple_dst_path::CloneToUninit>::clone_to_uninit(#last_ident, dest.add(offsets[#last_idx]));
 
                         #(
                             dest.add(offsets[#first_idxs]).cast::<#first_tys>().write(#first_idents);
@@ -231,29 +286,49 @@ pub fn derive_dst(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 })
             }
         }
-    };
+    })
+}
 
-    expanded.into()
+fn add_clone_to_uninit_trait_bounds(
+    mut generics: Generics,
+    simple_dst_path: &Path,
+) -> syn::Result<Generics> {
+    for param in &mut generics.params {
+        if let GenericParam::Type(ref mut type_param) = *param {
+            let bound = if has_dst_attr(&type_param.attrs)? {
+                parse_quote! { #simple_dst_path::CloneToUninit }
+            } else {
+                parse_quote! { ::core::clone::Clone }
+            };
+            type_param.bounds.push(bound);
+        }
+    }
+    Ok(generics)
 }
 
 #[proc_macro_derive(CloneToUninit, attributes(dst))]
 pub fn derive_clone_to_uninit(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-
+    derive_clone_to_uninit_impl(input)
+        .unwrap_or_else(|e| e.into_compile_error())
+        .into()
+}
+fn derive_clone_to_uninit_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     let name = input.ident;
 
     let DstAttrs {
-        simple_dst_crate, ..
-    } = match get_dst_attrs(&input.attrs) {
-        Ok(dst_attrs) => dst_attrs,
-        Err(e) => return e.into_compile_error().into(),
-    };
+        simple_dst_path, ..
+    } = get_dst_attrs(&input.attrs)?;
 
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let generics = add_clone_to_uninit_trait_bounds(input.generics, &simple_dst_path)?;
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let fields = get_fields(&input.data);
+    let fields = get_fields(&input.data)?;
     if fields.is_empty() {
-        return quote! {compile_error!("type must have at least one field")}.into();
+        return Err(Error::new_spanned(
+            name,
+            "type must have at least one field",
+        ));
     }
 
     let n_fields = fields.len();
@@ -268,9 +343,9 @@ pub fn derive_clone_to_uninit(input: proc_macro::TokenStream) -> proc_macro::Tok
     let first_tys = &tys[..last_idx];
     let last_ty = &tys[last_idx];
 
-    let expanded = quote! {
+    Ok(quote! {
         #[automatically_derived]
-        unsafe impl #impl_generics #simple_dst_crate::CloneToUninit for #name #ty_generics #where_clause {
+        unsafe impl #impl_generics #simple_dst_path::CloneToUninit for #name #ty_generics #where_clause {
             unsafe fn clone_to_uninit(&self, dest: *mut u8) {
                 // FUTURE: switch to byte_offset_from_unsigned when it has stabilised.
                 let last_offset = unsafe {
@@ -282,7 +357,7 @@ pub fn derive_clone_to_uninit(input: proc_macro::TokenStream) -> proc_macro::Tok
                 )*
 
                 unsafe {
-                    <#last_ty as #simple_dst_crate::CloneToUninit>::clone_to_uninit(&self.#last_ident, dest.add(last_offset));
+                    <#last_ty as #simple_dst_path::CloneToUninit>::clone_to_uninit(&self.#last_ident, dest.add(last_offset));
 
                     #(
                         dest.add(::core::mem::offset_of!(Self, #first_idents)).cast::<#first_tys>().write(#first_idents);
@@ -290,68 +365,50 @@ pub fn derive_clone_to_uninit(input: proc_macro::TokenStream) -> proc_macro::Tok
                 }
             }
         }
-    };
-
-    expanded.into()
+    })
 }
 
 struct ToOwnedAttrs {
-    to_owned_crate: Path,
+    alloc_path: Path,
     owned: Type,
 }
 
 fn get_to_owned_attrs(attrs: &[Attribute], name: &Ident) -> syn::Result<ToOwnedAttrs> {
-    mod kw {
-        syn::custom_keyword!(to_owned_crate);
-        syn::custom_keyword!(owned);
-    }
-
-    let mut to_owned_crate: Option<Path> = None;
+    let mut alloc_path: Option<Path> = None;
     let mut owned: Option<Type> = None;
     for attr in attrs {
         if !attr.path().is_ident("to_owned") {
             continue;
         }
 
-        attr.parse_args_with(|input: ParseStream| {
-            let lookahead = input.lookahead1();
-            if lookahead.peek(kw::to_owned_crate) {
-                if to_owned_crate.is_some() {
-                    return Err(syn::Error::new_spanned(
-                        attr,
-                        "only one #[to_owned(to_owned_crate = ...)] is allowed",
-                    ));
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("alloc_path") {
+                if alloc_path.is_some() {
+                    return Err(meta.error("only one #[to_owned(alloc_path = ...)] is allowed"));
                 }
-                to_owned_crate = Some({
-                    input.parse::<kw::to_owned_crate>()?;
-                    input.parse::<Token![=]>()?;
-                    input.parse()?
+                alloc_path = Some({
+                    meta.input.parse::<Token![=]>()?;
+                    meta.input.parse()?
                 });
-            } else if lookahead.peek(kw::owned) {
+            } else if meta.path.is_ident("owned") {
                 if owned.is_some() {
-                    return Err(syn::Error::new_spanned(
-                        attr,
-                        "only one #[to_owned(owned = ...)] is allowed",
-                    ));
+                    return Err(meta.error("only one #[to_owned(owned = ...)] is allowed"));
                 }
                 owned = Some({
-                    input.parse::<kw::owned>()?;
-                    input.parse::<Token![=]>()?;
-                    input.parse()?
+                    meta.input.parse::<Token![=]>()?;
+                    meta.input.parse()?
                 })
             } else {
-                return Err(Error::new_spanned(
-                    attr,
-                    "unrecognised #[to_owned(...)] argument",
-                ));
+                return Err(meta.error("unrecognised #[to_owned(...)] argument"));
             }
             Ok(())
-        })?
+        })?;
     }
 
+    let alloc_path = alloc_path.unwrap_or_else(|| parse_quote! { ::std });
     let to_owned_attrs = ToOwnedAttrs {
-        to_owned_crate: to_owned_crate.unwrap_or_else(|| parse_quote! { ::alloc::borrow }),
-        owned: owned.unwrap_or_else(|| parse_quote! { Box<#name> }),
+        alloc_path: alloc_path.clone(),
+        owned: owned.unwrap_or_else(|| parse_quote! { #alloc_path::boxed::Box<#name> }),
     };
     Ok(to_owned_attrs)
 }
@@ -359,46 +416,41 @@ fn get_to_owned_attrs(attrs: &[Attribute], name: &Ident) -> syn::Result<ToOwnedA
 #[proc_macro_derive(ToOwned, attributes(dst, to_owned))]
 pub fn derive_to_owned(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    derive_to_owned_impl(input)
+        .unwrap_or_else(|e| e.into_compile_error())
+        .into()
+}
 
+fn derive_to_owned_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     let name = input.ident;
 
     let DstAttrs {
-        simple_dst_crate, ..
-    } = match get_dst_attrs(&input.attrs) {
-        Ok(dst_attrs) => dst_attrs,
-        Err(e) => return e.into_compile_error().into(),
-    };
-    let ToOwnedAttrs {
-        to_owned_crate,
-        owned,
-    } = match get_to_owned_attrs(&input.attrs, &name) {
-        Ok(to_owned_attrs) => to_owned_attrs,
-        Err(e) => return e.into_compile_error().into(),
-    };
+        simple_dst_path, ..
+    } = get_dst_attrs(&input.attrs)?;
+    let ToOwnedAttrs { alloc_path, owned } = get_to_owned_attrs(&input.attrs, &name)?;
 
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    quote! {
+    Ok(quote! {
         #[automatically_derived]
-        impl #impl_generics #to_owned_crate::ToOwned for #name #ty_generics #where_clause {
+        impl #impl_generics #alloc_path::borrow::ToOwned for #name #ty_generics #where_clause {
             type Owned = #owned;
 
             fn to_owned(&self) -> Self::Owned {
                 let layout = ::core::alloc::Layout::for_value(self);
 
                 unsafe {
-                    <#owned as #simple_dst_crate::AllocDst<#name>>::new_dst(
-                        <#name as #simple_dst_crate::Dst>::len(self),
+                    <#owned as #simple_dst_path::AllocDst<#name>>::new_dst(
+                        <#name as #simple_dst_path::Dst>::len(self),
                         layout,
                         |ptr| {
                             let dest = ptr.cast::<u8>().as_ptr();
 
-                            <#name as #simple_dst_crate::CloneToUninit>::clone_to_uninit(self, dest)
+                            <#name as #simple_dst_path::CloneToUninit>::clone_to_uninit(self, dest)
                         },
                     )
                 }
             }
         }
-    }
-    .into()
+    })
 }
