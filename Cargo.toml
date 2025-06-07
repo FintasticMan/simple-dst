@@ -5,7 +5,7 @@ members = ["simple-dst-derive"]
 name = "simple-dst"
 version = "0.1.0"
 edition = "2024"
-description = "Traits for implementing and using custom DSTs."
+description = "Traits for allocating and using custom DSTs."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/FintasticMan/simple-dst"
 keywords = ["dst", "types", "slice"]
@@ -18,5 +18,4 @@ simple-dst-derive = { version = "0.1.0", path = "simple-dst-derive", optional = 
 default = ["alloc", "derive"]
 alloc = []
 derive = ["simple-dst-derive"]
-std = []
 simple-dst-derive = ["dep:simple-dst-derive"]

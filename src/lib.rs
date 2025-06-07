@@ -1,26 +1,25 @@
-//! Traits for implementing and using DSTs.
+//! Traits for allocating and using DSTs.
 //!
 //! The design is inspired by the great [slice-dst] crate, but with more of a
 //! focus on implementability and use of modern Rust features.
 //!
 //! [slice-dst]: https://lib.rs/crates/slice-dst
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
-#[cfg(all(feature = "alloc", not(feature = "std")))]
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(feature = "alloc", not(feature = "std")))]
+#[cfg(feature = "alloc")]
 use alloc::{
     alloc::{alloc, dealloc, handle_alloc_error},
     boxed::Box,
     rc::Rc,
     sync::Arc,
 };
-#[cfg(not(feature = "std"))]
 use core::{
     alloc::{Layout, LayoutError},
     borrow::Borrow,
@@ -28,19 +27,9 @@ use core::{
     ptr,
 };
 use core::{convert::Infallible, error::Error};
-#[cfg(feature = "std")]
-use std::{
-    alloc::{Layout, LayoutError, alloc, dealloc, handle_alloc_error},
-    borrow::Borrow,
-    boxed::Box,
-    mem::{self, MaybeUninit},
-    ptr,
-    rc::Rc,
-    sync::Arc,
-};
 
 #[cfg(feature = "simple-dst-derive")]
-pub use simple_dst_derive::{CloneToUninit, Dst};
+pub use simple_dst_derive::{CloneToUninit, Dst, ToOwned};
 
 /// A dynamically sized type.
 ///
@@ -52,7 +41,7 @@ pub use simple_dst_derive::{CloneToUninit, Dst};
 pub unsafe trait Dst {
     /// The length of the DST.
     ///
-    /// This is NOT the size of the type, for that you should use [Self::layout].
+    /// This is NOT the size of the type, for that you should use [`Layout::for_value`].
     fn len(&self) -> usize;
 
     /// Returns the layout of the DST, assuming it has the given length.
@@ -195,57 +184,6 @@ unsafe impl CloneToUninit for str {
     }
 }
 
-#[cfg(all(feature = "alloc", not(feature = "std")))]
-#[macro_export]
-macro_rules! impl_to_owned_for {
-    ($ty:ty, $owned:ty) => {
-        impl ::alloc::borrow::ToOwned for $ty {
-            type Owned = $owned;
-
-            fn to_owned(&self) -> Self::Owned {
-                let layout = ::core::alloc::Layout::for_value(self);
-
-                unsafe {
-                    <$owned as $crate::AllocDst<$ty>>::new_dst(
-                        <$ty as $crate::Dst>::len(self),
-                        layout,
-                        |ptr| {
-                            let dest = ptr.cast::<u8>().as_ptr();
-
-                            <$ty as $crate::CloneToUninit>::clone_to_uninit(self, dest)
-                        },
-                    )
-                }
-            }
-        }
-    };
-}
-#[cfg(feature = "std")]
-#[macro_export]
-macro_rules! impl_to_owned_for {
-    ($ty:ty, $owned:ty) => {
-        impl ::std::borrow::ToOwned for $ty {
-            type Owned = $owned;
-
-            fn to_owned(&self) -> Self::Owned {
-                let layout = ::core::alloc::Layout::for_value(self);
-
-                unsafe {
-                    <$owned as $crate::AllocDst<$ty>>::new_dst(
-                        <$ty as $crate::Dst>::len(self),
-                        layout,
-                        |ptr| {
-                            let dest = ptr.cast::<u8>().as_ptr();
-
-                            <$ty as $crate::CloneToUninit>::clone_to_uninit(self, dest)
-                        },
-                    )
-                }
-            }
-        }
-    };
-}
-
 /// Type that can allocate a DST and store it inside it.
 ///
 /// # Safety
@@ -283,7 +221,7 @@ pub unsafe trait AllocDst<T: ?Sized + Dst>: Sized + Borrow<T> {
     }
 }
 
-#[cfg(any(feature = "alloc", feature = "std"))]
+#[cfg(feature = "alloc")]
 unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
     unsafe fn try_new_dst<F, E: Error>(len: usize, layout: Layout, init: F) -> Result<Self, E>
     where
@@ -332,7 +270,7 @@ unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
     }
 }
 
-#[cfg(any(feature = "alloc", feature = "std"))]
+#[cfg(feature = "alloc")]
 unsafe impl<T: ?Sized + Dst> AllocDst<T> for Rc<T> {
     unsafe fn try_new_dst<F, E: Error>(len: usize, layout: Layout, init: F) -> Result<Self, E>
     where
@@ -342,7 +280,7 @@ unsafe impl<T: ?Sized + Dst> AllocDst<T> for Rc<T> {
     }
 }
 
-#[cfg(any(feature = "alloc", feature = "std"))]
+#[cfg(feature = "alloc")]
 unsafe impl<T: ?Sized + Dst> AllocDst<T> for Arc<T> {
     unsafe fn try_new_dst<F, E: Error>(len: usize, layout: Layout, init: F) -> Result<Self, E>
     where
