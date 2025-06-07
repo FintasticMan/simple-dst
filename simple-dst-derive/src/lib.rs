@@ -269,7 +269,7 @@ fn derive_dst_impl(input: DeriveInput) -> syn::Result<TokenStream> {
             }
 
             #new_unchecked_vis unsafe fn new_unchecked<A: #simple_dst_path::AllocDst<Self>>(
-                #( #first_idents: #first_tys ),*,
+                #( #first_idents: #first_tys, )*
                 #last_ident: &#last_ty
             ) -> ::core::result::Result<A, ::core::alloc::LayoutError> {
                 let (layout, offsets) = Self::__dst_impl_layout_offsets(#last_ident.len())?;
