@@ -171,6 +171,10 @@ fn has_dst_attr(attrs: &[Attribute]) -> syn::Result<bool> {
 fn add_dst_trait_bounds(mut generics: Generics, simple_dst_path: &Path) -> syn::Result<Generics> {
     for param in &mut generics.params {
         if let GenericParam::Type(ref mut type_param) = *param {
+            // TODO: This works, but the compiler doesn't consider attributes on type
+            // parameters to be in the scope of the derive macro, so it doesn't
+            // recognise the `dst` attribute. Figure out what in the world to do about
+            // this.
             if has_dst_attr(&type_param.attrs)? {
                 type_param
                     .bounds
@@ -295,6 +299,10 @@ fn add_clone_to_uninit_trait_bounds(
 ) -> syn::Result<Generics> {
     for param in &mut generics.params {
         if let GenericParam::Type(ref mut type_param) = *param {
+            // TODO: This works, but the compiler doesn't consider attributes on type
+            // parameters to be in the scope of the derive macro, so it doesn't
+            // recognise the `dst` attribute. Figure out what in the world to do about
+            // this.
             let bound = if has_dst_attr(&type_param.attrs)? {
                 parse_quote! { #simple_dst_path::CloneToUninit }
             } else {
