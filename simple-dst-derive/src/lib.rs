@@ -278,8 +278,8 @@ fn derive_dst_impl(input: DeriveInput) -> syn::Result<TokenStream> {
             ) -> ::core::result::Result<A, ::core::alloc::LayoutError> {
                 let (layout, offsets) = Self::__dst_impl_layout_offsets(#last_ident.len())?;
                 Ok(unsafe {
-                    A::new_dst(<#last_ty as #simple_dst_path::Dst>::len(#last_ident), layout, |ptr| {
-                        let dest = ptr.cast::<u8>().as_ptr();
+                    A::new_dst(<#last_ty as #simple_dst_path::Dst>::len(#last_ident), layout, |ptr: *mut #name| {
+                        let dest = ptr.cast::<u8>();
 
                         <#last_ty as #simple_dst_path::CloneToUninit>::clone_to_uninit(#last_ident, dest.add(offsets[#last_idx]));
 
@@ -451,8 +451,8 @@ fn derive_to_owned_impl(input: DeriveInput) -> syn::Result<TokenStream> {
                     <#owned as #simple_dst_path::AllocDst<#name>>::new_dst(
                         <#name as #simple_dst_path::Dst>::len(self),
                         layout,
-                        |ptr| {
-                            let dest = ptr.cast::<u8>().as_ptr();
+                        |ptr: *mut #name| {
+                            let dest = ptr.cast::<u8>();
 
                             <#name as #simple_dst_path::CloneToUninit>::clone_to_uninit(self, dest)
                         },

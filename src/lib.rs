@@ -23,10 +23,10 @@ use alloc::{
 use core::{
     alloc::{Layout, LayoutError},
     borrow::Borrow,
+    convert::Infallible,
     mem::{self, MaybeUninit},
     ptr,
 };
-use core::{convert::Infallible, error::Error};
 
 #[cfg(feature = "simple-dst-derive")]
 pub use simple_dst_derive::{CloneToUninit, Dst, ToOwned};
@@ -198,9 +198,9 @@ pub unsafe trait AllocDst<T: ?Sized + Dst>: Sized + Borrow<T> {
     ///
     /// The `init` function must correctly initialize the data pointed to, or return an
     /// error.
-    unsafe fn try_new_dst<F, E: Error>(len: usize, layout: Layout, init: F) -> Result<Self, E>
+    unsafe fn try_new_dst<F, E>(len: usize, layout: Layout, init: F) -> Result<Self, E>
     where
-        F: FnOnce(ptr::NonNull<T>) -> Result<(), E>;
+        F: FnOnce(*mut T) -> Result<(), E>;
 
     /// Allocate the DST with the given length, initialize the data with the
     /// given function, and store it in the type.
@@ -210,7 +210,7 @@ pub unsafe trait AllocDst<T: ?Sized + Dst>: Sized + Borrow<T> {
     /// The `init` function must correctly initialize the data pointed to.
     unsafe fn new_dst<F>(len: usize, layout: Layout, init: F) -> Self
     where
-        F: FnOnce(ptr::NonNull<T>),
+        F: FnOnce(*mut T),
     {
         unsafe {
             match Self::try_new_dst(len, layout, |ptr| Ok::<(), Infallible>(init(ptr))) {
@@ -223,9 +223,9 @@ pub unsafe trait AllocDst<T: ?Sized + Dst>: Sized + Borrow<T> {
 
 #[cfg(feature = "alloc")]
 unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
-    unsafe fn try_new_dst<F, E: Error>(len: usize, layout: Layout, init: F) -> Result<Self, E>
+    unsafe fn try_new_dst<F, E>(len: usize, layout: Layout, init: F) -> Result<Self, E>
     where
-        F: FnOnce(ptr::NonNull<T>) -> Result<(), E>,
+        F: FnOnce(*mut T) -> Result<(), E>,
     {
         struct RawBox<T: ?Sized + Dst>(ptr::NonNull<T>, Layout);
 
@@ -264,7 +264,7 @@ unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
 
         unsafe {
             let b = RawBox::new(len, layout);
-            init(b.0)?;
+            init(b.0.as_ptr())?;
             Ok(b.finalize())
         }
     }
@@ -272,9 +272,9 @@ unsafe impl<T: ?Sized + Dst> AllocDst<T> for Box<T> {
 
 #[cfg(feature = "alloc")]
 unsafe impl<T: ?Sized + Dst> AllocDst<T> for Rc<T> {
-    unsafe fn try_new_dst<F, E: Error>(len: usize, layout: Layout, init: F) -> Result<Self, E>
+    unsafe fn try_new_dst<F, E>(len: usize, layout: Layout, init: F) -> Result<Self, E>
     where
-        F: FnOnce(ptr::NonNull<T>) -> Result<(), E>,
+        F: FnOnce(*mut T) -> Result<(), E>,
     {
         Ok(Self::from(unsafe { Box::try_new_dst(len, layout, init) }?))
     }
@@ -282,9 +282,9 @@ unsafe impl<T: ?Sized + Dst> AllocDst<T> for Rc<T> {
 
 #[cfg(feature = "alloc")]
 unsafe impl<T: ?Sized + Dst> AllocDst<T> for Arc<T> {
-    unsafe fn try_new_dst<F, E: Error>(len: usize, layout: Layout, init: F) -> Result<Self, E>
+    unsafe fn try_new_dst<F, E>(len: usize, layout: Layout, init: F) -> Result<Self, E>
     where
-        F: FnOnce(ptr::NonNull<T>) -> Result<(), E>,
+        F: FnOnce(*mut T) -> Result<(), E>,
     {
         Ok(Self::from(unsafe { Box::try_new_dst(len, layout, init) }?))
     }

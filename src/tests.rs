@@ -8,8 +8,8 @@ fn str_test() {
     let str = "thisisatest";
     let layout = Layout::for_value(str);
     let boxed: Box<str> = unsafe {
-        Box::new_dst(str.len(), layout, |ptr| {
-            str.clone_to_uninit(ptr.cast().as_ptr());
+        Box::new_dst(str.len(), layout, |ptr: *mut str| {
+            str.clone_to_uninit(ptr.cast());
         })
     };
 
@@ -23,8 +23,8 @@ fn zst_test() {
     let arr: [(); 0] = [];
     let layout = Layout::for_value(&arr);
     let boxed: Box<[()]> = unsafe {
-        Box::new_dst(arr.len(), layout, |ptr| {
-            arr.clone_to_uninit(ptr.cast().as_ptr());
+        Box::new_dst(arr.len(), layout, |ptr: *mut [()]| {
+            arr.clone_to_uninit(ptr.cast());
         })
     };
 
@@ -115,15 +115,8 @@ impl Type {
     fn new_internal(data1: i16, data2: usize, data3: u32, slice: &[i128]) -> Box<Self> {
         let (layout, offsets) = Self::__dst_impl_layout_offsets(slice.len()).unwrap();
         unsafe {
-            Box::new_dst(slice.len(), layout, |ptr| {
-                Self::__dst_impl_write_to_uninit(
-                    ptr.cast().as_ptr(),
-                    offsets[3],
-                    data1,
-                    data2,
-                    data3,
-                    slice,
-                )
+            Box::new_dst(slice.len(), layout, |ptr: *mut Self| {
+                Self::__dst_impl_write_to_uninit(ptr.cast(), offsets[3], data1, data2, data3, slice)
             })
         }
     }
@@ -150,8 +143,8 @@ fn clone_test() {
 
     let layout = Layout::for_value(v1.as_ref());
     let v2 = unsafe {
-        Box::new_dst(v1.len(), layout, |ptr: ptr::NonNull<Type>| {
-            v1.as_ref().clone_to_uninit(ptr.cast().as_ptr());
+        Box::new_dst(v1.len(), layout, |ptr: *mut Type| {
+            v1.as_ref().clone_to_uninit(ptr.cast());
         })
     };
     assert_eq!(v2.data1, v1.data1);
