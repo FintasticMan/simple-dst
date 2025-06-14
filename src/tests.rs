@@ -41,7 +41,7 @@ struct Type {
 }
 
 unsafe impl Dst for Type {
-    fn len(&self) -> usize {
+    fn metadata(&self) -> usize {
         self.slice.len()
     }
 
@@ -132,8 +132,8 @@ fn complex_test() {
     assert_eq!(v.slice[0], -2);
     assert_eq!(v.slice[1], 5);
     assert_eq!(v.slice[2], 20);
-    assert_eq!(v.len(), 3);
-    assert_eq!(v.len(), v.slice.len());
+    assert_eq!(v.metadata(), 3);
+    assert_eq!(v.metadata(), v.slice.len());
 }
 
 #[cfg(feature = "alloc")]
@@ -143,7 +143,7 @@ fn clone_test() {
 
     let layout = Layout::for_value(v1.as_ref());
     let v2 = unsafe {
-        Box::new_dst(v1.len(), layout, |ptr: *mut Type| {
+        Box::new_dst(v1.metadata(), layout, |ptr: *mut Type| {
             v1.as_ref().clone_to_uninit(ptr.cast());
         })
     };
@@ -153,5 +153,5 @@ fn clone_test() {
     assert_eq!(v2.slice[0], v1.slice[0]);
     assert_eq!(v2.slice[1], v1.slice[1]);
     assert_eq!(v2.slice[2], v1.slice[2]);
-    assert_eq!(v2.len(), v1.len());
+    assert_eq!(v2.metadata(), v1.metadata());
 }
